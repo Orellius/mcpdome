@@ -62,7 +62,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Iron Dome for AI Agents — MCP security gateway proxy"
+description = "Protective Dome for AI Agents — MCP security gateway proxy"
 
 [[bin]]
 name = "mcpdome"

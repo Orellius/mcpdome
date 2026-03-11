@@ -9,7 +9,7 @@ use tracing_subscriber::EnvFilter;
 #[derive(Parser)]
 #[command(
     name = "mcpdome",
-    about = "Iron Dome for AI Agents — MCP security gateway proxy",
+    about = "Protective Dome for AI Agents — MCP security gateway proxy",
     version
 )]
 struct Cli {

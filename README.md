@@ -4,7 +4,7 @@
 
 <h1 align="center">MCPDome</h1>
 
-<p align="center"><strong>Iron Dome for AI Agents — MCP Security Gateway</strong></p>
+<p align="center"><strong>Protective Dome for AI Agents — MCP Security Gateway</strong></p>
 
 <p align="center">
   <a href="https://github.com/orellius/mcpdome/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license" /></a>

@@ -38,7 +38,7 @@ def send_and_receive(proc, request):
 def main():
     print(f"\n{BOLD}{CYAN}  ╔══════════════════════════════════════╗{RESET}")
     print(f"{BOLD}{CYAN}  ║     MCPDome v0.1.0 — Live Demo       ║{RESET}")
-    print(f"{BOLD}{CYAN}  ║     Iron Dome for AI Agents           ║{RESET}")
+    print(f"{BOLD}{CYAN}  ║     Protective Dome for AI Agents           ║{RESET}")
     print(f"{BOLD}{CYAN}  ╚══════════════════════════════════════╝{RESET}\n")
 
     # Find the mcpdome binary

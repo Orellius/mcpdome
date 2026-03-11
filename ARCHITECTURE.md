@@ -1,6 +1,6 @@
-# MCPDome — Iron Dome for AI Agents
+# MCPDome — Protective Dome for AI Agents
 
-> *Born under Iron Dome. Building the digital one.*
+> *Born under the dome. Building the digital one.*
 
 **Version**: 0.1.0-draft
 **Status**: Architecture Specification
@@ -793,7 +793,7 @@ A complete `tools/call` request through MCPDome:
 ## 15. CLI Interface
 
 ```
-mcpdome — Iron Dome for AI Agents
+mcpdome — Protective Dome for AI Agents
 
 USAGE:
     mcpdome <COMMAND> [OPTIONS]
@@ -923,4 +923,4 @@ EXAMPLES:
 
 ---
 
-*MCPDome: Iron Dome for AI Agents. Born under the real one.*
+*MCPDome: Protective Dome for AI Agents. Born under the real one.*
