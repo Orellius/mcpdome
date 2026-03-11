@@ -1,0 +1,66 @@
+# MCPDome Configuration — Example Policy
+# Copy this to mcpdome.toml and customize for your setup.
+
+[mcpdome]
+version = "1"
+default_effect = "deny"
+
+# ── Rule 1: Block secret leaks everywhere (highest priority) ──
+[[rules]]
+id = "block-secrets"
+priority = 1
+effect = "deny"
+identities = "*"
+tools = "*"
+arguments = [
+    { param = "*", deny_regex = [
+        "AKIA[A-Z0-9]{16}",               # AWS access keys
+        "ghp_[a-zA-Z0-9]{36}",            # GitHub PATs
+        "-----BEGIN.*PRIVATE KEY-----",    # Private keys
+        "sk-[a-zA-Z0-9]{20,}",            # OpenAI/Stripe keys
+        "xoxb-[0-9]+-[a-zA-Z0-9]+",       # Slack bot tokens
+    ] },
+]
+
+# ── Rule 2: Admins can do anything (clean args pass rule 1 first) ──
+[[rules]]
+id = "admin-full-access"
+priority = 10
+effect = "allow"
+identities = { labels = ["role:admin"] }
+tools = "*"
+
+# ── Rule 3: Block destructive tools for developers ──
+[[rules]]
+id = "dev-no-destructive"
+priority = 50
+effect = "deny"
+identities = { labels = ["role:developer"] }
+tools = ["delete_file", "drop_table", "rm_rf", "exec_command"]
+
+# ── Rule 4: Developers can use read tools ──
+[[rules]]
+id = "dev-read-tools"
+priority = 100
+effect = "allow"
+identities = { labels = ["role:developer"] }
+tools = ["read_file", "grep", "git_status", "git_log", "list_dir"]
+
+# ── Rule 5: Developers can write, but only to safe paths ──
+[[rules]]
+id = "dev-write-safe-paths"
+priority = 110
+effect = "allow"
+identities = { labels = ["role:developer"] }
+tools = ["write_file"]
+arguments = [
+    { param = "path", allow_glob = ["/tmp/**", "/home/*/projects/**"], deny_regex = [".*\\.env$", ".*credentials.*", ".*\\.key$"] },
+]
+
+# ── Rule 6: CI bot limited to test + deploy staging ──
+[[rules]]
+id = "ci-bot-tools"
+priority = 100
+effect = "allow"
+identities = { principals = ["psk:ci-bot"] }
+tools = ["run_tests", "deploy_staging", "git_status"]
