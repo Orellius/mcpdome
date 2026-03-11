@@ -1,4 +1,8 @@
 use clap::{Parser, Subcommand};
+use dome_gate::{Gate, GateConfig};
+use dome_ledger::{Ledger, StderrSink};
+use dome_sentinel::AnonymousAuthenticator;
+use dome_throttle::{BudgetTrackerConfig, RateLimiterConfig};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -24,6 +28,22 @@ enum Commands {
         /// Log level (off, error, warn, info, debug, trace)
         #[arg(long, default_value = "info")]
         log_level: String,
+
+        /// Enable policy enforcement
+        #[arg(long, default_value_t = false)]
+        enforce_policy: bool,
+
+        /// Enable injection detection (ward)
+        #[arg(long, default_value_t = false)]
+        enable_ward: bool,
+
+        /// Enable schema pinning
+        #[arg(long, default_value_t = false)]
+        enable_schema_pin: bool,
+
+        /// Enable rate limiting
+        #[arg(long, default_value_t = false)]
+        enable_rate_limit: bool,
     },
 }
 
@@ -32,20 +52,25 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Proxy { upstream, log_level } => {
-            // Initialize tracing
+        Commands::Proxy {
+            upstream,
+            log_level,
+            enforce_policy,
+            enable_ward,
+            enable_schema_pin,
+            enable_rate_limit,
+        } => {
             tracing_subscriber::fmt()
                 .with_env_filter(
                     EnvFilter::try_from_default_env()
                         .unwrap_or_else(|_| EnvFilter::new(&log_level)),
                 )
                 .with_target(false)
-                .with_writer(std::io::stderr) // logs go to stderr, MCP traffic goes through stdout
+                .with_writer(std::io::stderr)
                 .init();
 
             info!(upstream = upstream.as_str(), "MCPDome starting");
 
-            // Parse the upstream command
             let parts: Vec<&str> = upstream.split_whitespace().collect();
             if parts.is_empty() {
                 anyhow::bail!("--upstream cannot be empty");
@@ -54,7 +79,27 @@ async fn main() -> anyhow::Result<()> {
             let command = parts[0];
             let args = &parts[1..];
 
-            dome_gate::Gate::run_stdio(command, args).await?;
+            let config = GateConfig {
+                enforce_policy,
+                enable_ward,
+                enable_schema_pin,
+                enable_rate_limit,
+                enable_budget: false,
+                allow_anonymous: true,
+            };
+
+            let ledger = Ledger::new(vec![Box::new(StderrSink::new())]);
+
+            let gate = Gate::new(
+                config,
+                vec![Box::new(AnonymousAuthenticator)],
+                None,
+                RateLimiterConfig::default(),
+                BudgetTrackerConfig::default(),
+                ledger,
+            );
+
+            gate.run_stdio(command, args).await?;
         }
     }
 

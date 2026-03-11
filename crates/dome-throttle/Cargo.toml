@@ -1,0 +1,16 @@
+[package]
+name = "dome-throttle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Token-bucket rate limiting and budget tracking for MCPDome"
+
+[dependencies]
+dome-core.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+dashmap = "6"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "time", "test-util"] }

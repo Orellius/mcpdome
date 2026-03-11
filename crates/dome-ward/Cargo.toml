@@ -1,0 +1,19 @@
+[package]
+name = "dome-ward"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Injection detection, schema integrity, and heuristic analysis for MCPDome"
+
+[dependencies]
+dome-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+regex.workspace = true
+sha2.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

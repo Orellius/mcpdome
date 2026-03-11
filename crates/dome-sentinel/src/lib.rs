@@ -1,0 +1,345 @@
+//! `dome-sentinel` -- Authentication & identity resolution for MCPDome.
+//!
+//! This crate resolves raw MCP connections into typed `Identity` values
+//! by chaining pluggable `Authenticator` strategies. Phase 2 (stdio)
+//! supports pre-shared key and anonymous authentication.
+
+pub mod auth;
+pub mod identity;
+pub mod resolver;
+
+pub use auth::{AnonymousAuthenticator, AuthOutcome, Authenticator, PskAuthenticator, PskEntry};
+pub use identity::{AuthMethod, Identity};
+pub use resolver::{IdentityResolver, ResolverConfig};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dome_core::McpMessage;
+    use serde_json::json;
+    use std::collections::HashSet;
+
+    // -----------------------------------------------------------------------
+    // Helpers
+    // -----------------------------------------------------------------------
+
+    fn make_initialize_msg(psk: Option<&str>) -> McpMessage {
+        let mut params = json!({"capabilities": {}});
+        if let Some(key) = psk {
+            params
+                .as_object_mut()
+                .unwrap()
+                .insert("_mcpdome_psk".to_string(), json!(key));
+        }
+        McpMessage {
+            jsonrpc: "2.0".to_string(),
+            id: Some(json!(1)),
+            method: Some("initialize".to_string()),
+            params: Some(params),
+            result: None,
+            error: None,
+        }
+    }
+
+    fn make_psk_entries() -> Vec<PskEntry> {
+        vec![
+            PskEntry {
+                secret: "secret-dev-123".to_string(),
+                key_id: "dev-key-1".to_string(),
+                labels: HashSet::from([
+                    "role:developer".to_string(),
+                    "env:staging".to_string(),
+                ]),
+            },
+            PskEntry {
+                secret: "secret-admin-456".to_string(),
+                key_id: "admin-key-1".to_string(),
+                labels: HashSet::from(["role:admin".to_string()]),
+            },
+        ]
+    }
+
+    // -----------------------------------------------------------------------
+    // PSK extraction and validation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn extract_psk_from_initialize_params() {
+        let msg = make_initialize_msg(Some("secret-dev-123"));
+        let psk = PskAuthenticator::extract_psk(&msg);
+        assert_eq!(psk, Some("secret-dev-123".to_string()));
+    }
+
+    #[test]
+    fn extract_psk_returns_none_when_absent() {
+        let msg = make_initialize_msg(None);
+        let psk = PskAuthenticator::extract_psk(&msg);
+        assert_eq!(psk, None);
+    }
+
+    #[tokio::test]
+    async fn psk_authenticator_succeeds_with_valid_key() {
+        let auth = PskAuthenticator::new(make_psk_entries());
+        let msg = make_initialize_msg(Some("secret-dev-123"));
+
+        match auth.authenticate(&msg).await {
+            AuthOutcome::Authenticated(id) => {
+                assert_eq!(id.principal, "psk:dev-key-1");
+                assert!(matches!(
+                    id.auth_method,
+                    AuthMethod::PreSharedKey { ref key_id } if key_id == "dev-key-1"
+                ));
+            }
+            other => panic!("expected Authenticated, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn psk_authenticator_fails_with_invalid_key() {
+        let auth = PskAuthenticator::new(make_psk_entries());
+        let msg = make_initialize_msg(Some("wrong-key"));
+
+        match auth.authenticate(&msg).await {
+            AuthOutcome::Failed(reason) => {
+                assert!(reason.contains("invalid"), "reason: {reason}");
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn psk_authenticator_not_applicable_for_non_initialize() {
+        let auth = PskAuthenticator::new(make_psk_entries());
+        let msg = McpMessage {
+            jsonrpc: "2.0".to_string(),
+            id: Some(json!(2)),
+            method: Some("tools/call".to_string()),
+            params: Some(json!({"name": "read_file", "_mcpdome_psk": "secret-dev-123"})),
+            result: None,
+            error: None,
+        };
+
+        match auth.authenticate(&msg).await {
+            AuthOutcome::NotApplicable => {} // correct
+            other => panic!("expected NotApplicable, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn psk_authenticator_not_applicable_when_no_psk_field() {
+        let auth = PskAuthenticator::new(make_psk_entries());
+        let msg = make_initialize_msg(None);
+
+        match auth.authenticate(&msg).await {
+            AuthOutcome::NotApplicable => {} // correct
+            other => panic!("expected NotApplicable, got {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // PSK stripping from forwarded message
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn strip_psk_removes_field_from_params() {
+        let msg = make_initialize_msg(Some("secret-dev-123"));
+
+        // Verify the field is present before stripping.
+        assert!(msg.params.as_ref().unwrap().get("_mcpdome_psk").is_some());
+
+        let stripped = PskAuthenticator::strip_psk(&msg);
+
+        // Field must be gone.
+        assert!(stripped
+            .params
+            .as_ref()
+            .unwrap()
+            .get("_mcpdome_psk")
+            .is_none());
+
+        // Other params must survive.
+        assert!(stripped
+            .params
+            .as_ref()
+            .unwrap()
+            .get("capabilities")
+            .is_some());
+    }
+
+    #[test]
+    fn strip_psk_is_noop_when_field_absent() {
+        let msg = make_initialize_msg(None);
+        let stripped = PskAuthenticator::strip_psk(&msg);
+        assert_eq!(
+            msg.params.as_ref().unwrap().to_string(),
+            stripped.params.as_ref().unwrap().to_string(),
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Anonymous fallback
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn anonymous_authenticator_always_succeeds() {
+        let auth = AnonymousAuthenticator;
+        let msg = make_initialize_msg(None);
+
+        match auth.authenticate(&msg).await {
+            AuthOutcome::Authenticated(id) => {
+                assert_eq!(id.principal, "anonymous");
+                assert_eq!(id.auth_method, AuthMethod::Anonymous);
+                assert!(id.labels.is_empty());
+            }
+            other => panic!("expected Authenticated, got {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Identity label assignment
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn psk_auth_assigns_configured_labels() {
+        let auth = PskAuthenticator::new(make_psk_entries());
+        let msg = make_initialize_msg(Some("secret-dev-123"));
+
+        match auth.authenticate(&msg).await {
+            AuthOutcome::Authenticated(id) => {
+                assert!(id.has_label("role:developer"));
+                assert!(id.has_label("env:staging"));
+                assert!(!id.has_label("role:admin"));
+            }
+            other => panic!("expected Authenticated, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn different_psk_gets_different_labels() {
+        let auth = PskAuthenticator::new(make_psk_entries());
+        let msg = make_initialize_msg(Some("secret-admin-456"));
+
+        match auth.authenticate(&msg).await {
+            AuthOutcome::Authenticated(id) => {
+                assert_eq!(id.principal, "psk:admin-key-1");
+                assert!(id.has_label("role:admin"));
+                assert!(!id.has_label("role:developer"));
+            }
+            other => panic!("expected Authenticated, got {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Authenticator chain resolution order (IdentityResolver)
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn resolver_returns_first_authenticated_identity() {
+        let resolver = IdentityResolver::new(
+            vec![
+                Box::new(PskAuthenticator::new(make_psk_entries())),
+                Box::new(AnonymousAuthenticator),
+            ],
+            ResolverConfig {
+                allow_anonymous: true,
+            },
+        );
+
+        let msg = make_initialize_msg(Some("secret-dev-123"));
+        let identity = resolver.resolve(&msg).await.unwrap();
+
+        // PSK should win over anonymous since it matched first.
+        assert_eq!(identity.principal, "psk:dev-key-1");
+    }
+
+    #[tokio::test]
+    async fn resolver_falls_through_to_anonymous_when_allowed() {
+        let resolver = IdentityResolver::new(
+            vec![Box::new(PskAuthenticator::new(make_psk_entries()))],
+            ResolverConfig {
+                allow_anonymous: true,
+            },
+        );
+
+        // No PSK in the message, so PSK auth returns NotApplicable.
+        let msg = make_initialize_msg(None);
+        let identity = resolver.resolve(&msg).await.unwrap();
+
+        assert_eq!(identity.principal, "anonymous");
+        assert_eq!(identity.auth_method, AuthMethod::Anonymous);
+    }
+
+    #[tokio::test]
+    async fn resolver_rejects_when_anonymous_denied() {
+        let resolver = IdentityResolver::new(
+            vec![Box::new(PskAuthenticator::new(make_psk_entries()))],
+            ResolverConfig {
+                allow_anonymous: false,
+            },
+        );
+
+        let msg = make_initialize_msg(None);
+        let result = resolver.resolve(&msg).await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("no valid credentials"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolver_stops_on_failed_auth_does_not_fall_through() {
+        // If PSK is present but invalid, the resolver must NOT fall
+        // through to anonymous. Failed means "credentials were wrong",
+        // not "credentials were absent".
+        let resolver = IdentityResolver::new(
+            vec![
+                Box::new(PskAuthenticator::new(make_psk_entries())),
+                Box::new(AnonymousAuthenticator),
+            ],
+            ResolverConfig {
+                allow_anonymous: true,
+            },
+        );
+
+        let msg = make_initialize_msg(Some("totally-wrong-key"));
+        let result = resolver.resolve(&msg).await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("invalid pre-shared key"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolver_with_empty_chain_and_anonymous_allowed() {
+        let resolver = IdentityResolver::new(
+            vec![],
+            ResolverConfig {
+                allow_anonymous: true,
+            },
+        );
+
+        let msg = make_initialize_msg(None);
+        let identity = resolver.resolve(&msg).await.unwrap();
+        assert_eq!(identity.principal, "anonymous");
+    }
+
+    #[tokio::test]
+    async fn resolver_with_empty_chain_and_anonymous_denied() {
+        let resolver = IdentityResolver::new(
+            vec![],
+            ResolverConfig {
+                allow_anonymous: false,
+            },
+        );
+
+        let msg = make_initialize_msg(None);
+        let result = resolver.resolve(&msg).await;
+        assert!(result.is_err());
+    }
+}

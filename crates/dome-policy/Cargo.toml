@@ -1,0 +1,22 @@
+[package]
+name = "dome-policy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "TOML policy engine and authorization decisions for MCPDome"
+
+[dependencies]
+dome-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+# Policy-specific dependencies
+toml = "0.8"
+glob-match = "0.2"
+regex.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

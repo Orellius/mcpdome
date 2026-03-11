@@ -8,8 +8,15 @@ description = "Interceptor chain orchestration for MCPDome"
 [dependencies]
 dome-core.workspace = true
 dome-transport.workspace = true
+dome-sentinel.workspace = true
+dome-policy.workspace = true
+dome-throttle.workspace = true
+dome-ward.workspace = true
+dome-ledger.workspace = true
 tokio.workspace = true
 async-trait.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+chrono.workspace = true

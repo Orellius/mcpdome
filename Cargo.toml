@@ -30,13 +30,31 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 clap = { version = "4", features = ["derive"] }
 
 # Utilities
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
+
+# Crypto
+sha2 = "0.10"
+
+# Regex
+regex = "1"
+
+# Policy engine
+toml = "0.8"
+glob-match = "0.2"
+
+# Concurrency
+dashmap = "6"
 
 # Internal crates
 dome-core = { path = "crates/dome-core" }
+dome-ward = { path = "crates/dome-ward" }
 dome-transport = { path = "crates/dome-transport" }
 dome-gate = { path = "crates/dome-gate" }
+dome-ledger = { path = "crates/dome-ledger" }
+dome-sentinel = { path = "crates/dome-sentinel" }
+dome-throttle = { path = "crates/dome-throttle" }
+dome-policy = { path = "crates/dome-policy" }
 
 [package]
 name = "mcpdome"
@@ -54,6 +72,11 @@ path = "src/main.rs"
 dome-core.workspace = true
 dome-transport.workspace = true
 dome-gate.workspace = true
+dome-sentinel.workspace = true
+dome-policy.workspace = true
+dome-throttle.workspace = true
+dome-ward.workspace = true
+dome-ledger.workspace = true
 tokio.workspace = true
 clap.workspace = true
 tracing.workspace = true
