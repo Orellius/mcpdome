@@ -3,7 +3,9 @@ name = "dome-gate"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
 description = "Interceptor chain orchestration for MCPDome"
+repository.workspace = true
 
 [dependencies]
 dome-core.workspace = true

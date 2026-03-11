@@ -3,7 +3,9 @@ name = "dome-throttle"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
 description = "Token-bucket rate limiting and budget tracking for MCPDome"
+repository.workspace = true
 
 [dependencies]
 dome-core.workspace = true

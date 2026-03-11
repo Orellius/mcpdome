@@ -3,7 +3,9 @@ name = "dome-transport"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
 description = "MCP transport layer — stdio and HTTP proxy"
+repository.workspace = true
 
 [dependencies]
 dome-core.workspace = true

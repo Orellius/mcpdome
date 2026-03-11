@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "TOML policy engine and authorization decisions for MCPDome"
+repository.workspace = true
 
 [dependencies]
 dome-core.workspace = true
