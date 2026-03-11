@@ -89,6 +89,8 @@ mcpdome proxy --upstream "..." --enable-ward --enable-schema-pin --enable-rate-l
 
 ## What It Catches
 
+<div align="center">
+
 | Threat | How MCPDome Stops It |
 |--------|---------------------|
 | Prompt injection in tool args | Ward scans for "ignore previous instructions", role hijacking, etc. |
@@ -98,6 +100,8 @@ mcpdome proxy --upstream "..." --enable-ward --enable-schema-pin --enable-rate-l
 | Unauthorized tool access | Default-deny policy with identity labels and tool matching |
 | Abuse / runaway agents | Token-bucket rate limiting per identity and per tool |
 | Tampering with audit trail | SHA-256 hash chain makes retroactive log editing detectable |
+
+</div>
 
 ## Policy Example
 
