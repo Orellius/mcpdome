@@ -1,0 +1,41 @@
+MCPDome
+Copyright 2026 Orel Ohayon
+
+This product includes software developed by third parties.
+The following components are included under their respective licenses:
+
+================================================================================
+sha2 (https://github.com/RustCrypto/hashes)
+License: MIT OR Apache-2.0
+
+Copyright (c) RustCrypto Contributors.
+
+================================================================================
+dashmap (https://github.com/xacrimon/dashmap)
+License: MIT
+
+Copyright (c) 2019 Acrimon.
+
+================================================================================
+regex (https://github.com/rust-lang/regex)
+License: MIT OR Apache-2.0
+
+Copyright (c) 2014 The Rust Project Developers.
+
+================================================================================
+glob-match (https://github.com/devongovett/glob-match)
+License: MIT
+
+Copyright (c) Devon Govett.
+
+================================================================================
+toml (https://github.com/toml-rs/toml)
+License: MIT OR Apache-2.0
+
+Copyright (c) toml-rs contributors.
+
+================================================================================
+
+All other dependencies are licensed under MIT, Apache-2.0, or dual
+MIT/Apache-2.0 licenses. The complete dependency tree with license information
+is available via `cargo metadata` or in the Cargo.lock file.

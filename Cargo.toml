@@ -8,6 +8,9 @@ edition = "2024"
 license = "Apache-2.0"
 authors = ["Orel Ohayon <orel@orellius.ai>"]
 repository = "https://github.com/orellius/mcpdome"
+description = "Protective Dome for AI Agents — MCP security gateway proxy"
+keywords = ["mcp", "security", "proxy", "ai-agents", "gateway"]
+categories = ["command-line-utilities", "network-programming"]
 
 [workspace.dependencies]
 # Async runtime
@@ -63,6 +66,11 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "Protective Dome for AI Agents — MCP security gateway proxy"
+homepage = "https://github.com/orellius/mcpdome"
+documentation = "https://docs.rs/mcpdome"
+readme = "README.md"
+keywords.workspace = true
+categories.workspace = true
 
 [[bin]]
 name = "mcpdome"

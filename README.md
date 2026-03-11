@@ -7,10 +7,12 @@
 <p align="center"><strong>Protective Dome for AI Agents — MCP Security Gateway</strong></p>
 
 <p align="center">
+  <a href="https://crates.io/crates/mcpdome"><img src="https://img.shields.io/crates/v/mcpdome.svg" alt="crates.io" /></a>
+  <a href="https://crates.io/crates?q=dome-"><img src="https://img.shields.io/badge/crates-8%20published-e6822a" alt="crates" /></a>
   <a href="https://github.com/orellius/mcpdome/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license" /></a>
   <a href="https://github.com/orellius/mcpdome"><img src="https://img.shields.io/badge/rust-2024%20edition-orange.svg" alt="rust" /></a>
-  <a href="https://github.com/orellius/mcpdome"><img src="https://img.shields.io/badge/tests-127%20passing-brightgreen.svg" alt="tests" /></a>
-  <a href="https://github.com/orellius/mcpdome"><img src="https://img.shields.io/badge/latency-0.2ms-blueviolet.svg" alt="latency" /></a>
+  <a href="https://docs.rs/mcpdome"><img src="https://docs.rs/mcpdome/badge.svg" alt="docs.rs" /></a>
+  <a href="https://github.com/orellius/mcpdome/actions"><img src="https://github.com/orellius/mcpdome/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
 </p>
 
 <p align="center">
@@ -19,7 +21,8 @@
 
 <p align="center">
   <a href="https://github.com/orellius/mcpdome/blob/main/ARCHITECTURE.md"><strong>Architecture</strong></a> ·
-  <a href="https://github.com/orellius/mcpdome/blob/main/mcpdome.example.toml"><strong>Example Policy</strong></a>
+  <a href="https://github.com/orellius/mcpdome/blob/main/mcpdome.example.toml"><strong>Example Policy</strong></a> ·
+  <a href="https://github.com/orellius/mcpdome/blob/main/CHANGELOG.md"><strong>Changelog</strong></a>
 </p>
 
 <p align="center">
@@ -61,6 +64,9 @@ AI agents are getting access to powerful tools — file systems, databases, APIs
 ## Install
 
 ```bash
+# From crates.io
+cargo install mcpdome
+
 # From source
 git clone https://github.com/orellius/mcpdome.git
 cd mcpdome
