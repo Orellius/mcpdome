@@ -6,7 +6,7 @@ If you discover a security vulnerability in MCPDome, please report it responsibl
 
 **Do NOT open a public GitHub issue for security vulnerabilities.**
 
-Instead, email: **orel@orellius.ai**
+Instead, email: **orelohayon2468@gmail.com**
 
 Include:
 - Description of the vulnerability
