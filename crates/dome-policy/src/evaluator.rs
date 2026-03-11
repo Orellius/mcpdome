@@ -24,11 +24,12 @@ impl PolicyEngine {
                 let mut constraint_regexes = Vec::new();
                 if let Some(patterns) = &constraint.deny_regex {
                     for pattern in patterns {
-                        let re = Regex::new(pattern).map_err(|e| PolicyBuildError::InvalidRegex {
-                            rule_id: rule.id.clone(),
-                            pattern: pattern.clone(),
-                            reason: e.to_string(),
-                        })?;
+                        let re =
+                            Regex::new(pattern).map_err(|e| PolicyBuildError::InvalidRegex {
+                                rule_id: rule.id.clone(),
+                                pattern: pattern.clone(),
+                                reason: e.to_string(),
+                            })?;
                         constraint_regexes.push(re);
                     }
                 }
@@ -123,6 +124,7 @@ impl PolicyEngine {
     }
 
     /// For allow/audit_only rules: all constraints must pass.
+    #[allow(clippy::collapsible_if)]
     fn check_arguments_allow(
         &self,
         rule_idx: usize,
@@ -154,6 +156,7 @@ impl PolicyEngine {
     /// For deny rules: the rule matches (returns true) if ANY constraint's
     /// deny_regex fires on ANY argument, or if allow_glob is set and the value
     /// falls outside the allowed set. This is the trigger-based model.
+    #[allow(clippy::collapsible_if)]
     fn check_arguments_deny(
         &self,
         rule_idx: usize,
@@ -187,7 +190,13 @@ impl PolicyEngine {
     /// - allow_glob: value must match at least one glob.
     /// - deny_regex: value must NOT match any regex.
     /// - max_length: value must not exceed the limit.
-    fn value_passes_constraint(&self, constraint: &ArgConstraint, deny_regexes: &[Regex], value: &str) -> bool {
+    #[allow(clippy::collapsible_if)]
+    fn value_passes_constraint(
+        &self,
+        constraint: &ArgConstraint,
+        deny_regexes: &[Regex],
+        value: &str,
+    ) -> bool {
         if let Some(max) = constraint.max_length {
             if value.len() > max {
                 return false;
@@ -212,7 +221,13 @@ impl PolicyEngine {
     /// Returns true if the value triggers a deny (for deny rules).
     /// - deny_regex: fires if ANY regex matches.
     /// - max_length: fires if exceeded.
-    fn value_triggers_deny(&self, constraint: &ArgConstraint, deny_regexes: &[Regex], value: &str) -> bool {
+    #[allow(clippy::collapsible_if)]
+    fn value_triggers_deny(
+        &self,
+        constraint: &ArgConstraint,
+        deny_regexes: &[Regex],
+        value: &str,
+    ) -> bool {
         if let Some(max) = constraint.max_length {
             if value.len() > max {
                 return true;
@@ -437,7 +452,11 @@ arguments = [
         let d = engine.evaluate(&id, "write_file", &json!({"path": "/tmp/foo.txt"}));
         assert_eq!(d.effect, Effect::Allow);
 
-        let d = engine.evaluate(&id, "write_file", &json!({"path": "/home/alice/projects/x/y.rs"}));
+        let d = engine.evaluate(
+            &id,
+            "write_file",
+            &json!({"path": "/home/alice/projects/x/y.rs"}),
+        );
         assert_eq!(d.effect, Effect::Allow);
     }
 
@@ -509,11 +528,7 @@ tools = "*"
         assert_eq!(d.rule_id, "block-secrets");
 
         // Clean message passes through to allow-all
-        let d = engine.evaluate(
-            &id,
-            "send_message",
-            &json!({"text": "hello world"}),
-        );
+        let d = engine.evaluate(&id, "send_message", &json!({"text": "hello world"}));
         assert_eq!(d.effect, Effect::Allow);
     }
 
@@ -701,14 +716,26 @@ arguments = [
         let id = identity("user:a", &[]);
 
         // Good path
-        let d = engine.evaluate(&id, "write_file", &json!({"path": "/home/alice/projects/app/main.rs"}));
+        let d = engine.evaluate(
+            &id,
+            "write_file",
+            &json!({"path": "/home/alice/projects/app/main.rs"}),
+        );
         assert_eq!(d.effect, Effect::Allow);
 
         // Path matches glob but also matches deny_regex
-        let d = engine.evaluate(&id, "write_file", &json!({"path": "/home/alice/projects/.env"}));
+        let d = engine.evaluate(
+            &id,
+            "write_file",
+            &json!({"path": "/home/alice/projects/.env"}),
+        );
         assert_eq!(d.effect, Effect::Deny);
 
-        let d = engine.evaluate(&id, "write_file", &json!({"path": "/home/alice/projects/credentials.json"}));
+        let d = engine.evaluate(
+            &id,
+            "write_file",
+            &json!({"path": "/home/alice/projects/credentials.json"}),
+        );
         assert_eq!(d.effect, Effect::Deny);
     }
 

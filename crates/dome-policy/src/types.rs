@@ -68,15 +68,12 @@ impl IdentityMatcher {
         match self {
             Self::Any(s) if s == "*" => true,
             Self::Any(_) => false,
-            Self::Structured {
-                principals,
-                labels,
-            } => {
+            Self::Structured { principals, labels } => {
                 let principal_ok =
                     principals.is_empty() || principals.iter().any(|p| p == &identity.principal);
 
-                let labels_ok = labels.is_empty()
-                    || labels.iter().all(|l| identity.labels.contains(l));
+                let labels_ok =
+                    labels.is_empty() || labels.iter().all(|l| identity.labels.contains(l));
 
                 principal_ok && labels_ok
             }

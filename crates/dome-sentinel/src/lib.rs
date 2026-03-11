@@ -46,10 +46,7 @@ mod tests {
             PskEntry {
                 secret: "secret-dev-123".to_string(),
                 key_id: "dev-key-1".to_string(),
-                labels: HashSet::from([
-                    "role:developer".to_string(),
-                    "env:staging".to_string(),
-                ]),
+                labels: HashSet::from(["role:developer".to_string(), "env:staging".to_string()]),
             },
             PskEntry {
                 secret: "secret-admin-456".to_string(),
@@ -150,20 +147,24 @@ mod tests {
         let stripped = PskAuthenticator::strip_psk(&msg);
 
         // Field must be gone.
-        assert!(stripped
-            .params
-            .as_ref()
-            .unwrap()
-            .get("_mcpdome_psk")
-            .is_none());
+        assert!(
+            stripped
+                .params
+                .as_ref()
+                .unwrap()
+                .get("_mcpdome_psk")
+                .is_none()
+        );
 
         // Other params must survive.
-        assert!(stripped
-            .params
-            .as_ref()
-            .unwrap()
-            .get("capabilities")
-            .is_some());
+        assert!(
+            stripped
+                .params
+                .as_ref()
+                .unwrap()
+                .get("capabilities")
+                .is_some()
+        );
     }
 
     #[test]

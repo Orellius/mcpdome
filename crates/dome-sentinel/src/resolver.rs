@@ -5,19 +5,11 @@ use crate::auth::{AuthOutcome, Authenticator};
 use crate::identity::Identity;
 
 /// Configuration for the identity resolver.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ResolverConfig {
     /// If true, anonymous access is permitted when no authenticator succeeds.
     /// If false, a missing/invalid credential results in AuthFailed.
     pub allow_anonymous: bool,
-}
-
-impl Default for ResolverConfig {
-    fn default() -> Self {
-        Self {
-            allow_anonymous: false,
-        }
-    }
 }
 
 /// Chains multiple `Authenticator` implementations and resolves the first
@@ -42,10 +34,7 @@ impl IdentityResolver {
     }
 
     /// Resolve the caller's identity from an MCP message (typically `initialize`).
-    pub async fn resolve(
-        &self,
-        msg: &dome_core::McpMessage,
-    ) -> Result<Identity, DomeError> {
+    pub async fn resolve(&self, msg: &dome_core::McpMessage) -> Result<Identity, DomeError> {
         for auth in &self.authenticators {
             match auth.authenticate(msg).await {
                 AuthOutcome::Authenticated(identity) => {

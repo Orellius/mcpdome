@@ -62,10 +62,7 @@ pub struct PskAuthenticator {
 
 impl PskAuthenticator {
     pub fn new(entries: Vec<PskEntry>) -> Self {
-        let keys = entries
-            .into_iter()
-            .map(|e| (e.secret.clone(), e))
-            .collect();
+        let keys = entries.into_iter().map(|e| (e.secret.clone(), e)).collect();
         Self { keys }
     }
 

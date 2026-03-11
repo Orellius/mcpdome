@@ -15,5 +15,7 @@ pub mod types;
 
 // Re-exports for convenience.
 pub use evaluator::{PolicyBuildError, PolicyEngine};
-pub use parser::{parse_policy, PolicyParseError};
-pub use types::{ArgConstraint, Decision, Effect, Identity, IdentityMatcher, RateLimit, Rule, ToolMatcher};
+pub use parser::{PolicyParseError, parse_policy};
+pub use types::{
+    ArgConstraint, Decision, Effect, Identity, IdentityMatcher, RateLimit, Rule, ToolMatcher,
+};

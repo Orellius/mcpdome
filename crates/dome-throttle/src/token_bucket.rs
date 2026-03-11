@@ -112,8 +112,14 @@ mod tests {
         // Advance 2 seconds: should refill 2 tokens (rate = 1/sec)
         let later = now + Duration::from_secs(2);
         assert!(bucket.try_acquire_at(later), "should allow after refill");
-        assert!(bucket.try_acquire_at(later), "second token should be available");
-        assert!(!bucket.try_acquire_at(later), "third should fail, only 2 refilled");
+        assert!(
+            bucket.try_acquire_at(later),
+            "second token should be available"
+        );
+        assert!(
+            !bucket.try_acquire_at(later),
+            "third should fail, only 2 refilled"
+        );
     }
 
     #[tokio::test(start_paused = true)]

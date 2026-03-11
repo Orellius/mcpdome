@@ -3,8 +3,7 @@ use sha2::{Digest, Sha256};
 use crate::entry::AuditEntry;
 
 /// The genesis hash: 64 hex zeros (SHA-256 of "nothing").
-pub const GENESIS_HASH: &str =
-    "0000000000000000000000000000000000000000000000000000000000000000";
+pub const GENESIS_HASH: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
 /// A hash chain that computes SHA-256 digests linking each audit entry
 /// to its predecessor, making any retroactive tampering detectable.

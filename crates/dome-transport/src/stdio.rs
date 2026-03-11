@@ -36,13 +36,15 @@ impl StdioTransport {
             .stderr(std::process::Stdio::inherit()) // let server stderr pass through
             .spawn()?;
 
-        let stdout = child.stdout.take().ok_or_else(|| {
-            DomeError::Internal("failed to capture child stdout".into())
-        })?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| DomeError::Internal("failed to capture child stdout".into()))?;
 
-        let stdin = child.stdin.take().ok_or_else(|| {
-            DomeError::Internal("failed to capture child stdin".into())
-        })?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| DomeError::Internal("failed to capture child stdin".into()))?;
 
         Ok(Self {
             child,
@@ -54,8 +56,12 @@ impl StdioTransport {
     /// Split into independent reader and writer halves for concurrent use.
     pub fn split(self) -> (StdioReader, StdioWriter, Child) {
         (
-            StdioReader { reader: self.reader },
-            StdioWriter { writer: self.writer },
+            StdioReader {
+                reader: self.reader,
+            },
+            StdioWriter {
+                writer: self.writer,
+            },
             self.child,
         )
     }

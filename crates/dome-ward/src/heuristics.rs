@@ -85,7 +85,10 @@ mod tests {
     fn entropy_of_random_looking_data() {
         let text = "aK9xQ2mLpR4nW7jB5vF8eY3hU6iT1oS0dG";
         let e = entropy_score(text);
-        assert!(e > 4.0, "entropy was {e}, expected > 4.0 for random-looking data");
+        assert!(
+            e > 4.0,
+            "entropy was {e}, expected > 4.0 for random-looking data"
+        );
     }
 
     #[test]

@@ -8,7 +8,7 @@ pub mod chain;
 pub mod entry;
 pub mod sink;
 
-pub use chain::{verify_chain, ChainError, HashChain, GENESIS_HASH};
+pub use chain::{ChainError, GENESIS_HASH, HashChain, verify_chain};
 pub use entry::{AuditEntry, Direction};
 pub use sink::{AuditSink, FileSink, SinkError, StderrSink};
 
@@ -44,8 +44,8 @@ impl Ledger {
             .append(&entry)
             .map_err(|e| LedgerError::Serialization(e.to_string()))?;
 
-        let json_line = serde_json::to_string(&entry)
-            .map_err(|e| LedgerError::Serialization(e.to_string()))?;
+        let json_line =
+            serde_json::to_string(&entry).map_err(|e| LedgerError::Serialization(e.to_string()))?;
 
         for sink in &self.sinks {
             if let Err(e) = sink.write_entry(&entry, &json_line) {
@@ -115,7 +115,7 @@ mod tests {
 
     #[test]
     fn ledger_writes_to_memory_sink() {
-        let sink = MemorySink::new();
+        let _sink = MemorySink::new();
         // We need shared access, so wrap in Arc for the test
         // Actually, since Ledger takes Box<dyn AuditSink>, let's just verify via count
         let mut ledger = Ledger::new(vec![]);

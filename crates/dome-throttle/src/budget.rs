@@ -110,34 +110,28 @@ impl BudgetTracker {
     }
 
     /// Same as `try_spend` but with explicit timestamp (for testing).
-    pub fn try_spend_at(
-        &self,
-        identity: &str,
-        amount: f64,
-        now: Instant,
-    ) -> Result<(), DomeError> {
-        let mut entry = self
-            .budgets
-            .entry(identity.to_string())
-            .or_insert_with(|| {
-                Budget::new_at(
-                    self.config.default_cap,
-                    &self.config.default_unit,
-                    self.config.default_window,
-                    now,
-                )
-            });
+    pub fn try_spend_at(&self, identity: &str, amount: f64, now: Instant) -> Result<(), DomeError> {
+        let mut entry = self.budgets.entry(identity.to_string()).or_insert_with(|| {
+            Budget::new_at(
+                self.config.default_cap,
+                &self.config.default_unit,
+                self.config.default_window,
+                now,
+            )
+        });
 
-        entry.try_spend_inner(amount, now).map_err(|(spent, cap, unit)| {
-            warn!(
-                identity = identity,
-                spent = spent,
-                cap = cap,
-                unit = %unit,
-                "budget exhausted"
-            );
-            DomeError::BudgetExhausted { spent, cap, unit }
-        })
+        entry
+            .try_spend_inner(amount, now)
+            .map_err(|(spent, cap, unit)| {
+                warn!(
+                    identity = identity,
+                    spent = spent,
+                    cap = cap,
+                    unit = %unit,
+                    "budget exhausted"
+                );
+                DomeError::BudgetExhausted { spent, cap, unit }
+            })
     }
 
     /// Register a custom budget for an identity (overrides defaults).

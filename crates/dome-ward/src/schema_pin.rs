@@ -167,7 +167,7 @@ impl SchemaPinStore {
         }
 
         // Check for removed tools (pinned but not in new list)
-        for (name, _pin) in &self.pins {
+        for name in self.pins.keys() {
             if !seen_names.contains_key(name) {
                 drifts.push(SchemaDrift {
                     tool_name: name.clone(),

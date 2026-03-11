@@ -78,11 +78,7 @@ impl RateLimiter {
     /// 2. Per-identity-per-tool limit (only if `tool` is Some)
     ///
     /// Both must pass for the request to proceed.
-    pub fn check_rate_limit(
-        &self,
-        identity: &str,
-        tool: Option<&str>,
-    ) -> Result<(), DomeError> {
+    pub fn check_rate_limit(&self, identity: &str, tool: Option<&str>) -> Result<(), DomeError> {
         // Check per-identity limit
         let identity_key = BucketKey::for_identity(identity);
         let identity_ok = self
@@ -94,10 +90,7 @@ impl RateLimiter {
             .try_acquire();
 
         if !identity_ok {
-            warn!(
-                identity = identity,
-                "rate limit exceeded for identity"
-            );
+            warn!(identity = identity, "rate limit exceeded for identity");
             return Err(DomeError::RateLimited {
                 limit: self.config.per_identity_rate as u64,
                 window: "1s".to_string(),
@@ -141,7 +134,12 @@ impl RateLimiter {
 mod tests {
     use super::*;
 
-    fn limiter_with_config(identity_max: f64, identity_rate: f64, tool_max: f64, tool_rate: f64) -> RateLimiter {
+    fn limiter_with_config(
+        identity_max: f64,
+        identity_rate: f64,
+        tool_max: f64,
+        tool_rate: f64,
+    ) -> RateLimiter {
         RateLimiter::new(RateLimiterConfig {
             per_identity_max: identity_max,
             per_identity_rate: identity_rate,
@@ -180,8 +178,16 @@ mod tests {
         // Identity allows 100, but tool only allows 2
         let limiter = limiter_with_config(100.0, 0.0, 2.0, 0.0);
 
-        assert!(limiter.check_rate_limit("user-c", Some("dangerous_tool")).is_ok());
-        assert!(limiter.check_rate_limit("user-c", Some("dangerous_tool")).is_ok());
+        assert!(
+            limiter
+                .check_rate_limit("user-c", Some("dangerous_tool"))
+                .is_ok()
+        );
+        assert!(
+            limiter
+                .check_rate_limit("user-c", Some("dangerous_tool"))
+                .is_ok()
+        );
 
         // Tool bucket exhausted
         let err = limiter
@@ -190,7 +196,11 @@ mod tests {
         assert!(matches!(err, DomeError::RateLimited { .. }));
 
         // But a different tool should still work
-        assert!(limiter.check_rate_limit("user-c", Some("safe_tool")).is_ok());
+        assert!(
+            limiter
+                .check_rate_limit("user-c", Some("safe_tool"))
+                .is_ok()
+        );
     }
 
     #[test]

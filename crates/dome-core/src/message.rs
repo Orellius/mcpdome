@@ -71,10 +71,7 @@ impl McpMessage {
         if self.method.as_deref() != Some("tools/call") {
             return None;
         }
-        self.params
-            .as_ref()?
-            .get("name")?
-            .as_str()
+        self.params.as_ref()?.get("name")?.as_str()
     }
 
     /// Create a JSON-RPC error response for a given request ID.
@@ -109,7 +106,8 @@ mod tests {
 
     #[test]
     fn parse_response() {
-        let raw = r#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"hello"}]}}"#;
+        let raw =
+            r#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"hello"}]}}"#;
         let msg = McpMessage::parse(raw).unwrap();
         assert!(msg.is_response());
         assert!(!msg.is_request());
@@ -126,11 +124,7 @@ mod tests {
 
     #[test]
     fn error_response() {
-        let resp = McpMessage::error_response(
-            serde_json::json!(1),
-            -32600,
-            "denied by policy",
-        );
+        let resp = McpMessage::error_response(serde_json::json!(1), -32600, "denied by policy");
         assert!(resp.is_response());
         assert_eq!(resp.error.unwrap().code, -32600);
     }

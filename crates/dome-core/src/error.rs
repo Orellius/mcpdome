@@ -48,9 +48,9 @@ impl DomeError {
             Self::InjectionDetected { .. } => -32005,
             Self::SchemaDrift { .. } => -32006,
             Self::Transport(_) => -32000,
-            Self::Json(_) => -32700,       // Parse error (JSON-RPC standard)
+            Self::Json(_) => -32700, // Parse error (JSON-RPC standard)
             Self::Upstream(_) => -32000,
-            Self::Internal(_) => -32603,   // Internal error (JSON-RPC standard)
+            Self::Internal(_) => -32603, // Internal error (JSON-RPC standard)
         }
     }
 }

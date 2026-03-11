@@ -12,7 +12,7 @@ use serde_json::json;
 use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 /// Resolve the path to the echo_server.py fixture.
 fn echo_server_path() -> PathBuf {
@@ -62,10 +62,16 @@ async fn test_initialize_through_transport() {
     let request = make_request(json!(1), "initialize", json!({"capabilities": {}}));
     let response = send_and_recv(&mut writer, &mut reader, &request).await;
 
-    assert!(response.is_response(), "expected a response, got: {:?}", response);
+    assert!(
+        response.is_response(),
+        "expected a response, got: {:?}",
+        response
+    );
     assert_eq!(response.id, Some(json!(1)));
 
-    let result = response.result.expect("expected result in initialize response");
+    let result = response
+        .result
+        .expect("expected result in initialize response");
     assert_eq!(result["protocolVersion"], "2024-11-05");
     assert_eq!(result["serverInfo"]["name"], "echo-test-server");
     assert!(result["capabilities"]["tools"].is_object());
@@ -87,8 +93,12 @@ async fn test_tools_list_through_transport() {
     assert!(response.is_response());
     assert_eq!(response.id, Some(json!(2)));
 
-    let result = response.result.expect("expected result in tools/list response");
-    let tools = result["tools"].as_array().expect("tools should be an array");
+    let result = response
+        .result
+        .expect("expected result in tools/list response");
+    let tools = result["tools"]
+        .as_array()
+        .expect("tools should be an array");
     assert_eq!(tools.len(), 1);
     assert_eq!(tools[0]["name"], "echo");
     assert_eq!(tools[0]["inputSchema"]["type"], "object");
@@ -114,8 +124,12 @@ async fn test_tools_call_echo_through_transport() {
     assert!(response.is_response());
     assert_eq!(response.id, Some(json!(3)));
 
-    let result = response.result.expect("expected result in tools/call response");
-    let content = result["content"].as_array().expect("content should be an array");
+    let result = response
+        .result
+        .expect("expected result in tools/call response");
+    let content = result["content"]
+        .as_array()
+        .expect("content should be an array");
     assert_eq!(content.len(), 1);
     assert_eq!(content[0]["type"], "text");
     assert_eq!(content[0]["text"], "hello from MCPDome");

@@ -1,7 +1,7 @@
 pub mod stdio;
 
 use async_trait::async_trait;
-use dome_core::{McpMessage, DomeError};
+use dome_core::{DomeError, McpMessage};
 
 /// Transport abstraction — read/write MCP messages over any wire protocol.
 #[async_trait]

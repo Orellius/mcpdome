@@ -1,3 +1,5 @@
+#![allow(clippy::collapsible_if, clippy::too_many_arguments)]
+
 use std::sync::Arc;
 
 use dome_core::{DomeError, McpMessage};
@@ -254,7 +256,8 @@ impl Gate {
                                                 principal.clone(),
                                                 labels.iter().cloned(),
                                             );
-                                            let decision = engine.evaluate(&policy_id, tool_name, &args);
+                                            let decision =
+                                                engine.evaluate(&policy_id, tool_name, &args);
 
                                             if !decision.is_allowed() {
                                                 warn!(
@@ -282,11 +285,14 @@ impl Gate {
 
                                     // ── 4. Ward: Injection scanning ──
                                     if gate_config.enable_ward {
-                                        let args_str = serde_json::to_string(&args).unwrap_or_default();
+                                        let args_str =
+                                            serde_json::to_string(&args).unwrap_or_default();
                                         let matches = gate_scanner.scan_text(&args_str);
                                         if !matches.is_empty() {
-                                            let pattern_names: Vec<&str> =
-                                                matches.iter().map(|m| m.pattern_name.as_str()).collect();
+                                            let pattern_names: Vec<&str> = matches
+                                                .iter()
+                                                .map(|m| m.pattern_name.as_str())
+                                                .collect();
                                             warn!(
                                                 patterns = ?pattern_names,
                                                 tool = tool_name,
@@ -300,7 +306,10 @@ impl Gate {
                                                 Direction::Inbound,
                                                 &method,
                                                 tool.as_deref(),
-                                                &format!("deny:injection:{}", pattern_names.join(",")),
+                                                &format!(
+                                                    "deny:injection:{}",
+                                                    pattern_names.join(",")
+                                                ),
                                                 None,
                                                 start.elapsed().as_micros() as u64,
                                             )
@@ -379,10 +388,7 @@ impl Gate {
                                     let mut store = schema_store.lock().await;
                                     if first_tools_list {
                                         store.pin_tools(result);
-                                        info!(
-                                            pinned = store.len(),
-                                            "schema pins established"
-                                        );
+                                        info!(pinned = store.len(), "schema pins established");
                                         first_tools_list = false;
                                     } else {
                                         let drifts = store.verify_tools(result);

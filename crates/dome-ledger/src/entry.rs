@@ -90,7 +90,10 @@ mod tests {
 
     #[test]
     fn entry_serializes_to_json() {
-        let entry = sample_entry(0, "0000000000000000000000000000000000000000000000000000000000000000");
+        let entry = sample_entry(
+            0,
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        );
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"seq\":0"));
         assert!(json.contains("\"direction\":\"inbound\""));
@@ -127,7 +130,10 @@ mod tests {
     #[test]
     fn annotations_present_when_populated() {
         let mut entry = sample_entry(0, "00");
-        entry.annotations.insert("ward_flags".to_string(), serde_json::json!(["sensitive_path"]));
+        entry.annotations.insert(
+            "ward_flags".to_string(),
+            serde_json::json!(["sensitive_path"]),
+        );
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("annotations"));
         assert!(json.contains("sensitive_path"));
