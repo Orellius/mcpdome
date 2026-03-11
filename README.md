@@ -30,6 +30,8 @@
 
 MCPDome sits between your AI agent and any MCP server, intercepting every JSON-RPC message on the wire. It enforces authentication, authorization, rate limiting, and injection detection — without modifying either side. Think of it as a firewall for AI tool calls.
 
+<div align="center">
+
 ```
 ┌──────────┐         ┌─────────┐         ┌────────────┐
 │ AI Agent │ ──MCP──>│ MCPDome │──MCP──> │ MCP Server │
@@ -41,6 +43,8 @@ MCPDome sits between your AI agent and any MCP server, intercepting every JSON-R
                      │  TOML   │
                      └─────────┘
 ```
+
+</div>
 
 ## Why MCPDome?
 
