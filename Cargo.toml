@@ -1,0 +1,73 @@
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+authors = ["Orel Ohayon <orel@orellius.ai>"]
+repository = "https://github.com/orellius/mcpdome"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Utilities
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Internal crates
+dome-core = { path = "crates/dome-core" }
+dome-transport = { path = "crates/dome-transport" }
+dome-gate = { path = "crates/dome-gate" }
+
+[package]
+name = "mcpdome"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Iron Dome for AI Agents — MCP security gateway proxy"
+
+[[bin]]
+name = "mcpdome"
+path = "src/main.rs"
+
+[dependencies]
+dome-core.workspace = true
+dome-transport.workspace = true
+dome-gate.workspace = true
+tokio.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+dome-core.workspace = true
+dome-transport.workspace = true
+dome-gate.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+
+[[test]]
+name = "proxy_test"
+path = "tests/integration/proxy_test.rs"

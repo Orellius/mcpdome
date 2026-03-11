@@ -1,0 +1,15 @@
+[package]
+name = "dome-gate"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Interceptor chain orchestration for MCPDome"
+
+[dependencies]
+dome-core.workspace = true
+dome-transport.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+uuid.workspace = true

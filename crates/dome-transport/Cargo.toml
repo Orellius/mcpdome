@@ -1,0 +1,14 @@
+[package]
+name = "dome-transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MCP transport layer — stdio and HTTP proxy"
+
+[dependencies]
+dome-core.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+thiserror.workspace = true

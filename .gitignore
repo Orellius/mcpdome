@@ -1,0 +1,38 @@
+# Build artifacts
+/target/
+**/*.rs.bk
+
+# Cargo
+Cargo.lock
+!Cargo.lock
+
+# Editor / IDE
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.iml
+
+# macOS
+.DS_Store
+
+# Environment / secrets
+.env
+.env.*
+*.pem
+*.key
+
+# Logs
+*.log
+*.ndjson
+
+# Coverage
+*.profraw
+*.profdata
+lcov.info
+tarpaulin-report.html
+
+# Internal docs
+business.html
+BUSINESS.md
