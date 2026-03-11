@@ -47,14 +47,14 @@ glob-match = "0.2"
 dashmap = "6"
 
 # Internal crates
-dome-core = { path = "crates/dome-core" }
-dome-ward = { path = "crates/dome-ward" }
-dome-transport = { path = "crates/dome-transport" }
-dome-gate = { path = "crates/dome-gate" }
-dome-ledger = { path = "crates/dome-ledger" }
-dome-sentinel = { path = "crates/dome-sentinel" }
-dome-throttle = { path = "crates/dome-throttle" }
-dome-policy = { path = "crates/dome-policy" }
+dome-core = { version = "0.1.0", path = "crates/dome-core" }
+dome-ward = { version = "0.1.0", path = "crates/dome-ward" }
+dome-transport = { version = "0.1.0", path = "crates/dome-transport" }
+dome-gate = { version = "0.1.0", path = "crates/dome-gate" }
+dome-ledger = { version = "0.1.0", path = "crates/dome-ledger" }
+dome-sentinel = { version = "0.1.0", path = "crates/dome-sentinel" }
+dome-throttle = { version = "0.1.0", path = "crates/dome-throttle" }
+dome-policy = { version = "0.1.0", path = "crates/dome-policy" }
 
 [package]
 name = "mcpdome"
