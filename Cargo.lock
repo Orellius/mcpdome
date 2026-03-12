@@ -281,7 +281,7 @@ dependencies = [
 
 [[package]]
 name = "dome-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "serde",
@@ -293,7 +293,7 @@ dependencies = [
 
 [[package]]
 name = "dome-gate"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -313,7 +313,7 @@ dependencies = [
 
 [[package]]
 name = "dome-ledger"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "dome-core",
@@ -328,7 +328,7 @@ dependencies = [
 
 [[package]]
 name = "dome-policy"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dome-core",
  "glob-match",
@@ -342,7 +342,7 @@ dependencies = [
 
 [[package]]
 name = "dome-sentinel"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "argon2",
  "async-trait",
@@ -358,7 +358,7 @@ dependencies = [
 
 [[package]]
 name = "dome-throttle"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dashmap",
  "dome-core",
@@ -369,7 +369,7 @@ dependencies = [
 
 [[package]]
 name = "dome-transport"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "dome-core",
@@ -381,7 +381,7 @@ dependencies = [
 
 [[package]]
 name = "dome-ward"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "dome-core",
@@ -597,7 +597,7 @@ dependencies = [
 
 [[package]]
 name = "mcpdome"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
