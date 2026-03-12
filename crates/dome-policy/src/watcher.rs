@@ -158,7 +158,7 @@ impl PolicyWatcher {
 
         loop {
             // Wait for a reload signal.
-            let trigger = match self.reload_rx.recv().await {
+            let _trigger = match self.reload_rx.recv().await {
                 Some(t) => t,
                 None => {
                     info!("reload channel closed -- watcher exiting");
@@ -169,7 +169,7 @@ impl PolicyWatcher {
             // Debounce: drain any additional events that arrive within the
             // debounce window so we only reload once per burst.
             #[cfg(unix)]
-            let is_sighup = matches!(trigger, ReloadTrigger::Sighup);
+            let is_sighup = matches!(_trigger, ReloadTrigger::Sighup);
             #[cfg(not(unix))]
             let is_sighup = false;
 
