@@ -2,13 +2,14 @@
 
 use std::sync::Arc;
 
-use dome_core::{DomeError, McpMessage};
+use dome_core::{McpMessage, DomeError};
 use dome_ledger::{AuditEntry, Direction, Ledger};
 use dome_policy::{Identity as PolicyIdentity, PolicyEngine};
-use dome_sentinel::{AnonymousAuthenticator, Authenticator, IdentityResolver, ResolverConfig};
+use dome_sentinel::{AnonymousAuthenticator, Authenticator, IdentityResolver, PskAuthenticator, ResolverConfig};
 use dome_throttle::{BudgetTracker, BudgetTrackerConfig, RateLimiter, RateLimiterConfig};
 use dome_transport::stdio::StdioTransport;
 use dome_ward::{InjectionScanner, SchemaPinStore};
+use dome_ward::schema_pin::DriftSeverity;
 
 use chrono::Utc;
 use serde_json::Value;
@@ -47,18 +48,19 @@ impl Default for GateConfig {
     }
 }
 
-/// The Gate — MCPDome's core proxy loop with full interceptor chain.
+/// The Gate -- MCPDome's core proxy loop with full interceptor chain.
 ///
-/// Interceptor order (inbound, client → server):
-///   1. Sentinel — authenticate on `initialize`, resolve identity
-///   2. Throttle — check rate limits and budget
-///   3. Policy  — evaluate authorization rules
-///   4. Ward    — scan for injection patterns in tool arguments
-///   5. Ledger  — record the decision in the audit chain
+/// Interceptor order (inbound, client -> server):
+///   1. Sentinel -- authenticate on `initialize`, resolve identity
+///   2. Throttle -- check rate limits and budget
+///   3. Ward    -- scan for injection patterns in tool arguments
+///   4. Policy  -- evaluate authorization rules
+///   5. Ledger  -- record the decision in the audit chain
 ///
-/// Outbound (server → client):
-///   1. Schema Pin — verify tools/list responses for drift
-///   2. Ledger     — record outbound audit entry
+/// Outbound (server -> client):
+///   1. Schema Pin -- verify tools/list responses for drift (block Critical/High)
+///   2. Ward       -- scan outbound tool results for injection patterns
+///   3. Ledger     -- record outbound audit entry
 pub struct Gate {
     config: GateConfig,
     resolver: IdentityResolver,
@@ -117,9 +119,9 @@ impl Gate {
         let client_stdin = tokio::io::stdin();
         let client_stdout = tokio::io::stdout();
         let mut client_reader = BufReader::new(client_stdin);
-        let mut client_writer = client_stdout;
+        let client_writer: Arc<Mutex<tokio::io::Stdout>> = Arc::new(Mutex::new(client_stdout));
 
-        info!("MCPDome proxy active — interceptor chain armed");
+        info!("MCPDome proxy active -- interceptor chain armed");
 
         // Shared state for the two tasks
         let identity: Arc<Mutex<Option<dome_sentinel::Identity>>> = Arc::new(Mutex::new(None));
@@ -132,15 +134,16 @@ impl Gate {
         let gate_scanner = Arc::clone(&self.injection_scanner);
         let gate_ledger = Arc::clone(&self.ledger);
         let gate_config = self.config.clone();
+        let gate_client_writer = Arc::clone(&client_writer);
 
-        // Client → Server task (inbound interceptor chain)
+        // Client -> Server task (inbound interceptor chain)
         let client_to_server = tokio::spawn(async move {
             let mut line = String::new();
             loop {
                 line.clear();
                 match client_reader.read_line(&mut line).await {
                     Ok(0) => {
-                        info!("client closed stdin — shutting down");
+                        info!("client closed stdin -- shutting down");
                         break;
                     }
                     Ok(_) => {
@@ -164,6 +167,7 @@ impl Gate {
                                 );
 
                                 // ── 1. Sentinel: Authenticate on initialize ──
+                                let mut msg = msg;
                                 if method == "initialize" {
                                     match gate_resolver.resolve(&msg).await {
                                         Ok(id) => {
@@ -173,15 +177,50 @@ impl Gate {
                                                 "identity resolved"
                                             );
                                             *gate_identity.lock().await = Some(id);
+
+                                            // Fix 4: Strip PSK before forwarding so the
+                                            // downstream server never sees credentials.
+                                            msg = PskAuthenticator::strip_psk(&msg);
                                         }
                                         Err(e) => {
+                                            // Fix 1: On auth failure during initialize,
+                                            // send error response and do NOT forward.
                                             warn!(%e, "authentication failed");
-                                            // Auth failure logged; request still forwarded
-                                            // to let downstream server handle the handshake
-                                            // Still forward — let the server handle it
-                                            // but log the auth failure
+                                            let err_id = msg.id.clone().unwrap_or(Value::Null);
+                                            let err_resp = McpMessage::error_response(
+                                                err_id,
+                                                -32600,
+                                                "Authentication failed",
+                                            );
+                                            if let Err(we) = write_to_client(&gate_client_writer, &err_resp).await {
+                                                error!(%we, "failed to send auth error to client");
+                                                break;
+                                            }
+                                            continue;
                                         }
                                     }
+                                }
+
+                                // Fix 1: Block all non-initialize requests before
+                                // the session has been initialized (identity resolved).
+                                if method != "initialize" {
+                                    let identity_lock = gate_identity.lock().await;
+                                    if identity_lock.is_none() {
+                                        drop(identity_lock);
+                                        warn!(method = %method, "request before initialize");
+                                        let err_id = msg.id.clone().unwrap_or(Value::Null);
+                                        let err_resp = McpMessage::error_response(
+                                            err_id,
+                                            -32600,
+                                            "Session not initialized",
+                                        );
+                                        if let Err(we) = write_to_client(&gate_client_writer, &err_resp).await {
+                                            error!(%we, "failed to send not-initialized error to client");
+                                            break;
+                                        }
+                                        continue;
+                                    }
+                                    drop(identity_lock);
                                 }
 
                                 let identity_lock = gate_identity.lock().await;
@@ -195,99 +234,103 @@ impl Gate {
                                     .unwrap_or_default();
                                 drop(identity_lock);
 
-                                // Only intercept tools/call
-                                if method == "tools/call" {
-                                    let tool_name = tool.as_deref().unwrap_or("unknown");
-                                    let args = msg
-                                        .params
-                                        .as_ref()
-                                        .and_then(|p| p.get("arguments"))
-                                        .cloned()
-                                        .unwrap_or(Value::Null);
+                                // Fix 2: Apply interceptor chain to ALL methods,
+                                // not just tools/call.
 
-                                    // ── 2. Throttle: Rate limit check ──
-                                    if gate_config.enable_rate_limit {
-                                        if let Err(e) = gate_rate_limiter
-                                            .check_rate_limit(&principal, Some(tool_name))
-                                        {
-                                            warn!(%e, principal = %principal, tool = tool_name, "rate limited");
-                                            record_audit(
-                                                &gate_ledger,
-                                                request_id,
-                                                &principal,
-                                                Direction::Inbound,
-                                                &method,
-                                                tool.as_deref(),
-                                                "deny:rate_limit",
-                                                None,
-                                                start.elapsed().as_micros() as u64,
-                                            )
-                                            .await;
-                                            // Send error response back to client via server_writer
-                                            // For now, skip the request
-                                            continue;
+                                // Extract tool-specific fields conditionally.
+                                let tool_name = if method == "tools/call" {
+                                    tool.as_deref().unwrap_or("unknown")
+                                } else {
+                                    "-"
+                                };
+
+                                let args = msg
+                                    .params
+                                    .as_ref()
+                                    .and_then(|p| p.get("arguments"))
+                                    .cloned()
+                                    .unwrap_or(Value::Null);
+
+                                // ── 2. Throttle: Rate limit check ──
+                                if gate_config.enable_rate_limit {
+                                    let rl_tool = if method == "tools/call" { Some(tool_name) } else { None };
+                                    if let Err(e) = gate_rate_limiter
+                                        .check_rate_limit(&principal, rl_tool)
+                                    {
+                                        warn!(%e, principal = %principal, method = %method, "rate limited");
+                                        record_audit(
+                                            &gate_ledger,
+                                            request_id,
+                                            &principal,
+                                            Direction::Inbound,
+                                            &method,
+                                            tool.as_deref(),
+                                            "deny:rate_limit",
+                                            None,
+                                            start.elapsed().as_micros() as u64,
+                                        )
+                                        .await;
+                                        // Fix 3: Send JSON-RPC error on rate limit deny.
+                                        let err_id = msg.id.clone().unwrap_or(Value::Null);
+                                        let err_resp = McpMessage::error_response(
+                                            err_id,
+                                            -32000,
+                                            "Rate limit exceeded",
+                                        );
+                                        if let Err(we) = write_to_client(&gate_client_writer, &err_resp).await {
+                                            error!(%we, "failed to send rate limit error to client");
+                                            break;
                                         }
+                                        continue;
                                     }
+                                }
 
-                                    // ── 2b. Throttle: Budget check ──
-                                    if gate_config.enable_budget {
-                                        if let Err(e) = gate_budget.try_spend(&principal, 1.0) {
-                                            warn!(%e, principal = %principal, "budget exhausted");
-                                            record_audit(
-                                                &gate_ledger,
-                                                request_id,
-                                                &principal,
-                                                Direction::Inbound,
-                                                &method,
-                                                tool.as_deref(),
-                                                "deny:budget",
-                                                None,
-                                                start.elapsed().as_micros() as u64,
-                                            )
-                                            .await;
-                                            continue;
+                                // ── 2b. Throttle: Budget check ──
+                                if gate_config.enable_budget {
+                                    if let Err(e) = gate_budget.try_spend(&principal, 1.0) {
+                                        warn!(%e, principal = %principal, "budget exhausted");
+                                        record_audit(
+                                            &gate_ledger,
+                                            request_id,
+                                            &principal,
+                                            Direction::Inbound,
+                                            &method,
+                                            tool.as_deref(),
+                                            "deny:budget",
+                                            None,
+                                            start.elapsed().as_micros() as u64,
+                                        )
+                                        .await;
+                                        // Fix 3: Send JSON-RPC error on budget deny.
+                                        let err_id = msg.id.clone().unwrap_or(Value::Null);
+                                        let err_resp = McpMessage::error_response(
+                                            err_id,
+                                            -32000,
+                                            "Budget exhausted",
+                                        );
+                                        if let Err(we) = write_to_client(&gate_client_writer, &err_resp).await {
+                                            error!(%we, "failed to send budget error to client");
+                                            break;
                                         }
+                                        continue;
                                     }
+                                }
 
-                                    // ── 3. Policy: Authorization ──
-                                    if gate_config.enforce_policy {
-                                        if let Some(ref engine) = gate_policy {
-                                            let policy_id = PolicyIdentity::new(
-                                                principal.clone(),
-                                                labels.iter().cloned(),
-                                            );
-                                            let decision =
-                                                engine.evaluate(&policy_id, tool_name, &args);
+                                // ── 3. Ward: Injection scanning ──
+                                // Fix 8: Ward runs BEFORE policy so injection detection
+                                // is applied regardless of authorization level.
+                                if gate_config.enable_ward {
+                                    // Scan params/arguments if present.
+                                    let scan_text = if method == "tools/call" {
+                                        serde_json::to_string(&args).unwrap_or_default()
+                                    } else if let Some(ref params) = msg.params {
+                                        serde_json::to_string(params).unwrap_or_default()
+                                    } else {
+                                        String::new()
+                                    };
 
-                                            if !decision.is_allowed() {
-                                                warn!(
-                                                    rule_id = %decision.rule_id,
-                                                    tool = tool_name,
-                                                    principal = %principal,
-                                                    "policy denied"
-                                                );
-                                                record_audit(
-                                                    &gate_ledger,
-                                                    request_id,
-                                                    &principal,
-                                                    Direction::Inbound,
-                                                    &method,
-                                                    tool.as_deref(),
-                                                    &format!("deny:policy:{}", decision.rule_id),
-                                                    Some(&decision.rule_id),
-                                                    start.elapsed().as_micros() as u64,
-                                                )
-                                                .await;
-                                                continue;
-                                            }
-                                        }
-                                    }
-
-                                    // ── 4. Ward: Injection scanning ──
-                                    if gate_config.enable_ward {
-                                        let args_str =
-                                            serde_json::to_string(&args).unwrap_or_default();
-                                        let matches = gate_scanner.scan_text(&args_str);
+                                    if !scan_text.is_empty() {
+                                        let matches = gate_scanner.scan_text(&scan_text);
                                         if !matches.is_empty() {
                                             let pattern_names: Vec<&str> = matches
                                                 .iter()
@@ -295,6 +338,7 @@ impl Gate {
                                                 .collect();
                                             warn!(
                                                 patterns = ?pattern_names,
+                                                method = %method,
                                                 tool = tool_name,
                                                 principal = %principal,
                                                 "injection detected"
@@ -314,6 +358,70 @@ impl Gate {
                                                 start.elapsed().as_micros() as u64,
                                             )
                                             .await;
+                                            // Fix 3: Send JSON-RPC error on injection deny.
+                                            let err_id = msg.id.clone().unwrap_or(Value::Null);
+                                            let err_resp = McpMessage::error_response(
+                                                err_id,
+                                                -32003,
+                                                "Request blocked: injection pattern detected",
+                                            );
+                                            if let Err(we) = write_to_client(&gate_client_writer, &err_resp).await {
+                                                error!(%we, "failed to send injection error to client");
+                                                break;
+                                            }
+                                            continue;
+                                        }
+                                    }
+                                }
+
+                                // ── 4. Policy: Authorization ──
+                                if gate_config.enforce_policy {
+                                    if let Some(ref engine) = gate_policy {
+                                        // For tools/call, evaluate with the tool name;
+                                        // for other methods, evaluate with the method itself.
+                                        let policy_resource = if method == "tools/call" {
+                                            tool_name
+                                        } else {
+                                            method.as_str()
+                                        };
+                                        let policy_id = PolicyIdentity::new(
+                                            principal.clone(),
+                                            labels.iter().cloned(),
+                                        );
+                                        let decision =
+                                            engine.evaluate(&policy_id, policy_resource, &args);
+
+                                        if !decision.is_allowed() {
+                                            warn!(
+                                                rule_id = %decision.rule_id,
+                                                method = %method,
+                                                resource = policy_resource,
+                                                principal = %principal,
+                                                "policy denied"
+                                            );
+                                            record_audit(
+                                                &gate_ledger,
+                                                request_id,
+                                                &principal,
+                                                Direction::Inbound,
+                                                &method,
+                                                tool.as_deref(),
+                                                &format!("deny:policy:{}", decision.rule_id),
+                                                Some(&decision.rule_id),
+                                                start.elapsed().as_micros() as u64,
+                                            )
+                                            .await;
+                                            // Fix 3: Send JSON-RPC error on policy deny.
+                                            let err_id = msg.id.clone().unwrap_or(Value::Null);
+                                            let err_resp = McpMessage::error_response(
+                                                err_id,
+                                                -32003,
+                                                format!("Denied by policy: {}", decision.rule_id),
+                                            );
+                                            if let Err(we) = write_to_client(&gate_client_writer, &err_resp).await {
+                                                error!(%we, "failed to send policy error to client");
+                                                break;
+                                            }
                                             continue;
                                         }
                                     }
@@ -340,17 +448,18 @@ impl Gate {
                                 }
                             }
                             Err(e) => {
-                                warn!(%e, raw = trimmed, "invalid JSON from client, forwarding raw");
-                                let _ = server_writer
-                                    .send(&McpMessage {
-                                        jsonrpc: "2.0".to_string(),
-                                        id: None,
-                                        method: None,
-                                        params: None,
-                                        result: None,
-                                        error: None,
-                                    })
-                                    .await;
+                                // Fix 7: Drop invalid JSON. Send a JSON-RPC parse
+                                // error back to the client instead of forwarding.
+                                warn!(%e, raw = trimmed, "invalid JSON from client, dropping");
+                                let err_resp = McpMessage::error_response(
+                                    Value::Null,
+                                    -32700,
+                                    "Parse error: invalid JSON",
+                                );
+                                if let Err(we) = write_to_client(&gate_client_writer, &err_resp).await {
+                                    error!(%we, "failed to send parse error to client");
+                                    break;
+                                }
                             }
                         }
                     }
@@ -363,17 +472,24 @@ impl Gate {
         });
 
         let schema_store = Arc::clone(&self.schema_store);
-        let _outbound_ledger = Arc::clone(&self.ledger);
+        let outbound_ledger = Arc::clone(&self.ledger);
+        let outbound_scanner = Arc::clone(&self.injection_scanner);
         let outbound_config = self.config.clone();
+        let outbound_client_writer = Arc::clone(&client_writer);
 
-        // Server → Client task (outbound interceptor chain)
+        // Server -> Client task (outbound interceptor chain)
         let server_to_client = tokio::spawn(async move {
             let mut first_tools_list = true;
+            // Cache the last known-good tools/list response for fallback
+            // when critical schema drift is detected.
+            let mut last_good_tools_result: Option<Value> = None;
 
             loop {
                 match server_reader.recv().await {
                     Ok(msg) => {
+                        let start = std::time::Instant::now();
                         let method = msg.method.as_deref().unwrap_or("-").to_string();
+                        let outbound_request_id = Uuid::new_v4();
 
                         debug!(
                             method = method.as_str(),
@@ -381,18 +497,23 @@ impl Gate {
                             "server -> client"
                         );
 
+                        let mut forward_msg = msg;
+
                         // ── Schema Pin: Verify tools/list responses ──
                         if outbound_config.enable_schema_pin {
-                            if let Some(result) = &msg.result {
+                            if let Some(result) = &forward_msg.result {
                                 if result.get("tools").is_some() {
                                     let mut store = schema_store.lock().await;
                                     if first_tools_list {
                                         store.pin_tools(result);
                                         info!(pinned = store.len(), "schema pins established");
+                                        // Cache the first (known-good) tools result.
+                                        last_good_tools_result = Some(result.clone());
                                         first_tools_list = false;
                                     } else {
                                         let drifts = store.verify_tools(result);
                                         if !drifts.is_empty() {
+                                            let mut has_critical_or_high = false;
                                             for drift in &drifts {
                                                 warn!(
                                                     tool = %drift.tool_name,
@@ -400,6 +521,47 @@ impl Gate {
                                                     severity = ?drift.severity,
                                                     "schema drift detected"
                                                 );
+                                                if matches!(drift.severity, DriftSeverity::Critical | DriftSeverity::High) {
+                                                    has_critical_or_high = true;
+                                                }
+                                            }
+
+                                            // Fix 5: Block Critical/High schema drift.
+                                            // Send the previously pinned (known-good)
+                                            // schema instead of the drifted response.
+                                            if has_critical_or_high {
+                                                warn!("critical/high schema drift detected -- blocking drifted tools/list");
+                                                // Fix 9: Record outbound drift block.
+                                                record_audit(
+                                                    &outbound_ledger,
+                                                    outbound_request_id,
+                                                    "server",
+                                                    Direction::Outbound,
+                                                    "tools/list",
+                                                    None,
+                                                    "deny:schema_drift",
+                                                    None,
+                                                    start.elapsed().as_micros() as u64,
+                                                )
+                                                .await;
+
+                                                if let Some(ref good_result) = last_good_tools_result {
+                                                    // Replace with the known-good schema.
+                                                    forward_msg.result = Some(good_result.clone());
+                                                } else {
+                                                    // No known-good schema available; send error.
+                                                    let err_id = forward_msg.id.clone().unwrap_or(Value::Null);
+                                                    let err_resp = McpMessage::error_response(
+                                                        err_id,
+                                                        -32003,
+                                                        "Schema drift detected: tool definitions have been tampered with",
+                                                    );
+                                                    if let Err(we) = write_to_client(&outbound_client_writer, &err_resp).await {
+                                                        error!(%we, "failed to send schema drift error to client");
+                                                        break;
+                                                    }
+                                                    continue;
+                                                }
                                             }
                                         }
                                     }
@@ -407,29 +569,72 @@ impl Gate {
                             }
                         }
 
+                        // ── Fix 6: Outbound response scanning ──
+                        // Scan tool call results for injection patterns (log only).
+                        if outbound_config.enable_ward {
+                            if let Some(ref result) = forward_msg.result {
+                                // Scan content arrays in tool call responses.
+                                let scan_target = if let Some(content) = result.get("content") {
+                                    serde_json::to_string(content).unwrap_or_default()
+                                } else {
+                                    serde_json::to_string(result).unwrap_or_default()
+                                };
+
+                                if !scan_target.is_empty() {
+                                    let matches = outbound_scanner.scan_text(&scan_target);
+                                    if !matches.is_empty() {
+                                        let pattern_names: Vec<&str> = matches
+                                            .iter()
+                                            .map(|m| m.pattern_name.as_str())
+                                            .collect();
+                                        warn!(
+                                            patterns = ?pattern_names,
+                                            direction = "outbound",
+                                            "suspicious content in server response"
+                                        );
+                                        // Fix 9: Record outbound ward warning.
+                                        record_audit(
+                                            &outbound_ledger,
+                                            outbound_request_id,
+                                            "server",
+                                            Direction::Outbound,
+                                            &method,
+                                            None,
+                                            &format!("warn:outbound_injection:{}", pattern_names.join(",")),
+                                            None,
+                                            start.elapsed().as_micros() as u64,
+                                        )
+                                        .await;
+                                        // Don't block by default, just log.
+                                    }
+                                }
+                            }
+                        }
+
+                        // ── Fix 9: Record outbound audit entry ──
+                        record_audit(
+                            &outbound_ledger,
+                            outbound_request_id,
+                            "server",
+                            Direction::Outbound,
+                            &method,
+                            None,
+                            "forward",
+                            None,
+                            start.elapsed().as_micros() as u64,
+                        )
+                        .await;
+
                         // Forward to client
-                        match msg.to_json() {
-                            Ok(json) => {
-                                let mut out = json.into_bytes();
-                                out.push(b'\n');
-                                if let Err(e) = client_writer.write_all(&out).await {
-                                    error!(%e, "failed to write to client");
-                                    break;
-                                }
-                                if let Err(e) = client_writer.flush().await {
-                                    error!(%e, "failed to flush to client");
-                                    break;
-                                }
-                            }
-                            Err(e) => {
-                                error!(%e, "failed to serialize server response");
-                            }
+                        if let Err(e) = write_to_client(&outbound_client_writer, &forward_msg).await {
+                            error!(%e, "failed to write to client");
+                            break;
                         }
                     }
                     Err(DomeError::Transport(ref e))
                         if e.kind() == std::io::ErrorKind::UnexpectedEof =>
                     {
-                        info!("server closed stdout — shutting down");
+                        info!("server closed stdout -- shutting down");
                         break;
                     }
                     Err(e) => {
@@ -460,6 +665,27 @@ impl Gate {
         info!("MCPDome proxy shut down");
 
         Ok(())
+    }
+}
+
+/// Write a McpMessage to the client's stdout, with newline and flush.
+async fn write_to_client(
+    writer: &Arc<Mutex<tokio::io::Stdout>>,
+    msg: &McpMessage,
+) -> Result<(), std::io::Error> {
+    match msg.to_json() {
+        Ok(json) => {
+            let mut out = json.into_bytes();
+            out.push(b'\n');
+            let mut w = writer.lock().await;
+            w.write_all(&out).await?;
+            w.flush().await?;
+            Ok(())
+        }
+        Err(e) => {
+            error!(%e, "failed to serialize message for client");
+            Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+        }
     }
 }
 

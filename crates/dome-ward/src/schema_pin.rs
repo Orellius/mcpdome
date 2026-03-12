@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use tracing::warn;
 
 /// A pinned snapshot of a single tool's schema.
@@ -202,13 +202,35 @@ impl Default for SchemaPinStore {
     }
 }
 
+/// Recursively sort all object keys in a JSON value to produce a canonical form.
+///
+/// This ensures that `{"b":1,"a":2}` and `{"a":2,"b":1}` hash identically,
+/// preventing false drift detections caused by non-deterministic key ordering.
+fn canonicalize_json(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let sorted: BTreeMap<String, Value> = map
+                .iter()
+                .map(|(k, v)| (k.clone(), canonicalize_json(v)))
+                .collect();
+            // BTreeMap serializes in sorted key order
+            Value::Object(sorted.into_iter().collect())
+        }
+        Value::Array(arr) => Value::Array(arr.iter().map(canonicalize_json).collect()),
+        other => other.clone(),
+    }
+}
+
 /// Hash a JSON field value using SHA-256. If the field is None, hash an empty string.
+///
+/// Object keys are recursively sorted before serialization to ensure
+/// canonical hashing regardless of JSON key ordering.
 fn hash_field(value: Option<&Value>) -> [u8; 32] {
     let mut hasher = Sha256::new();
     match value {
         Some(v) => {
-            // Use canonical JSON serialization for consistent hashing
-            let serialized = serde_json::to_string(v).unwrap_or_default();
+            let canonical = canonicalize_json(v);
+            let serialized = serde_json::to_string(&canonical).unwrap_or_default();
             hasher.update(serialized.as_bytes());
         }
         None => {
@@ -517,5 +539,74 @@ mod tests {
         let bad = json!({ "something_else": true });
         store.pin_tools(&bad);
         assert!(store.is_empty());
+    }
+
+    #[test]
+    fn canonical_json_produces_same_hash_regardless_of_key_order() {
+        // Two JSON objects with identical content but different key ordering
+        let a = json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" },
+                "content": { "type": "string" }
+            },
+            "required": ["path", "content"]
+        });
+
+        let b = json!({
+            "required": ["path", "content"],
+            "type": "object",
+            "properties": {
+                "content": { "type": "string" },
+                "path": { "type": "string" }
+            }
+        });
+
+        let hash_a = hash_field(Some(&a));
+        let hash_b = hash_field(Some(&b));
+        assert_eq!(hash_a, hash_b, "canonical hashing should produce identical hashes for same-content objects");
+    }
+
+    #[test]
+    fn canonical_json_different_values_produce_different_hashes() {
+        let a = json!({"key": "value1"});
+        let b = json!({"key": "value2"});
+        let hash_a = hash_field(Some(&a));
+        let hash_b = hash_field(Some(&b));
+        assert_ne!(hash_a, hash_b);
+    }
+
+    #[test]
+    fn verify_no_false_drift_with_reordered_schema_keys() {
+        let mut store = SchemaPinStore::new();
+
+        // Pin with one key order
+        let tools_v1 = json!({
+            "tools": [{
+                "name": "my_tool",
+                "description": "A tool",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"a": {"type": "string"}, "b": {"type": "number"}},
+                    "required": ["a"]
+                }
+            }]
+        });
+        store.pin_tools(&tools_v1);
+
+        // Verify with different key order but same content
+        let tools_v2 = json!({
+            "tools": [{
+                "name": "my_tool",
+                "description": "A tool",
+                "inputSchema": {
+                    "required": ["a"],
+                    "properties": {"b": {"type": "number"}, "a": {"type": "string"}},
+                    "type": "object"
+                }
+            }]
+        });
+        let drifts = store.verify_tools(&tools_v2);
+        assert!(drifts.is_empty(), "reordered keys should not cause drift, got: {:?}", drifts);
     }
 }

@@ -1,5 +1,10 @@
 use std::collections::{HashMap, HashSet};
 
+use argon2::{
+    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
+    Algorithm, Argon2, Params, Version,
+};
+use password_hash::rand_core::OsRng;
 use async_trait::async_trait;
 use dome_core::McpMessage;
 use serde_json::Value;
@@ -51,19 +56,64 @@ pub struct PskEntry {
     pub labels: HashSet<String>,
 }
 
+/// Internal entry storing the Argon2id hash of the PSK secret.
+struct HashedPskEntry {
+    /// Argon2id hash of the secret (PHC string format).
+    hashed_secret: String,
+
+    /// A stable identifier for this key.
+    key_id: String,
+
+    /// Labels assigned to anyone authenticating with this key.
+    labels: HashSet<String>,
+}
+
 /// Authenticates clients via a `_mcpdome_psk` field in the `initialize` params.
 ///
-/// On success, the PSK field is stripped from the message so the downstream
-/// MCP server never sees it. Call `strip_psk` on the message before forwarding.
+/// On construction, all PSK secrets are hashed with Argon2id so that the
+/// raw secrets are never stored in memory beyond initialization. On
+/// authentication, the provided PSK is hashed and verified using constant-time
+/// comparison (provided by the argon2 crate's verify method).
 pub struct PskAuthenticator {
-    /// Map from raw secret value to entry metadata.
-    keys: HashMap<String, PskEntry>,
+    /// Map from key_id to hashed entry. Keyed by identifier, not raw secret.
+    entries: HashMap<String, HashedPskEntry>,
+}
+
+/// Create an Argon2id hasher with secure defaults.
+fn argon2_hasher() -> Argon2<'static> {
+    Argon2::new(
+        Algorithm::Argon2id,
+        Version::V0x13,
+        Params::new(16 * 1024, 2, 1, None).expect("valid Argon2 params"),
+    )
 }
 
 impl PskAuthenticator {
     pub fn new(entries: Vec<PskEntry>) -> Self {
-        let keys = entries.into_iter().map(|e| (e.secret.clone(), e)).collect();
-        Self { keys }
+        let argon2 = argon2_hasher();
+        let hashed_entries: HashMap<String, HashedPskEntry> = entries
+            .into_iter()
+            .map(|e| {
+                let salt = SaltString::generate(&mut OsRng);
+                let hashed = argon2
+                    .hash_password(e.secret.as_bytes(), &salt)
+                    .expect("Argon2 hashing should not fail with valid params")
+                    .to_string();
+
+                (
+                    e.key_id.clone(),
+                    HashedPskEntry {
+                        hashed_secret: hashed,
+                        key_id: e.key_id,
+                        labels: e.labels,
+                    },
+                )
+            })
+            .collect();
+
+        Self {
+            entries: hashed_entries,
+        }
     }
 
     /// Extract the `_mcpdome_psk` value from an initialize message's params, if present.
@@ -81,6 +131,28 @@ impl PskAuthenticator {
         }
         stripped
     }
+
+    /// Verify a provided PSK against all stored hashes.
+    ///
+    /// Uses Argon2id verification which performs constant-time comparison
+    /// internally, preventing timing side-channel attacks.
+    fn verify_psk(&self, provided_secret: &str) -> Option<&HashedPskEntry> {
+        let argon2 = argon2_hasher();
+
+        for entry in self.entries.values() {
+            let parsed_hash = match PasswordHash::new(&entry.hashed_secret) {
+                Ok(h) => h,
+                Err(_) => continue,
+            };
+            if argon2
+                .verify_password(provided_secret.as_bytes(), &parsed_hash)
+                .is_ok()
+            {
+                return Some(entry);
+            }
+        }
+        None
+    }
 }
 
 #[async_trait]
@@ -96,7 +168,7 @@ impl Authenticator for PskAuthenticator {
             None => return AuthOutcome::NotApplicable,
         };
 
-        match self.keys.get(&psk_value) {
+        match self.verify_psk(&psk_value) {
             Some(entry) => {
                 debug!(key_id = %entry.key_id, "PSK authentication succeeded");
                 AuthOutcome::Authenticated(Identity {

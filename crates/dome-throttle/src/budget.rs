@@ -88,15 +88,33 @@ impl Default for BudgetTrackerConfig {
 ///
 /// Tracks cumulative spend per identity within rolling time windows.
 /// Budgets are created lazily with default config on first access.
+/// Stale entries (past their window) are periodically cleaned up to
+/// prevent unbounded memory growth.
 pub struct BudgetTracker {
     budgets: DashMap<String, Budget>,
     config: BudgetTrackerConfig,
+    /// Maximum number of tracked identities before cleanup triggers.
+    max_entries: usize,
+    /// Counter for periodic cleanup scheduling.
+    insert_counter: std::sync::atomic::AtomicU64,
 }
 
 impl BudgetTracker {
     pub fn new(config: BudgetTrackerConfig) -> Self {
         Self {
             budgets: DashMap::new(),
+            max_entries: 10_000,
+            insert_counter: std::sync::atomic::AtomicU64::new(0),
+            config,
+        }
+    }
+
+    /// Create a tracker with a custom max entries limit.
+    pub fn with_max_entries(config: BudgetTrackerConfig, max_entries: usize) -> Self {
+        Self {
+            budgets: DashMap::new(),
+            max_entries,
+            insert_counter: std::sync::atomic::AtomicU64::new(0),
             config,
         }
     }
@@ -111,6 +129,8 @@ impl BudgetTracker {
 
     /// Same as `try_spend` but with explicit timestamp (for testing).
     pub fn try_spend_at(&self, identity: &str, amount: f64, now: Instant) -> Result<(), DomeError> {
+        let is_new = !self.budgets.contains_key(identity);
+
         let mut entry = self.budgets.entry(identity.to_string()).or_insert_with(|| {
             Budget::new_at(
                 self.config.default_cap,
@@ -120,7 +140,7 @@ impl BudgetTracker {
             )
         });
 
-        entry
+        let result = entry
             .try_spend_inner(amount, now)
             .map_err(|(spent, cap, unit)| {
                 warn!(
@@ -131,7 +151,41 @@ impl BudgetTracker {
                     "budget exhausted"
                 );
                 DomeError::BudgetExhausted { spent, cap, unit }
-            })
+            });
+
+        // Periodic cleanup on new insertions
+        if is_new {
+            let count = self
+                .insert_counter
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if count % 100 == 99 {
+                drop(entry);
+                self.maybe_cleanup(now);
+            }
+        }
+
+        result
+    }
+
+    /// Remove entries whose windows have expired (stale budgets).
+    /// Called periodically to prevent unbounded memory growth.
+    fn maybe_cleanup(&self, now: Instant) {
+        if self.budgets.len() <= self.max_entries {
+            return;
+        }
+
+        self.budgets.retain(|_key, budget| {
+            // Keep entries whose window hasn't expired yet
+            now.duration_since(budget.window_start) < budget.window
+        });
+    }
+
+    /// Explicitly run cleanup, removing entries whose windows have expired.
+    pub fn cleanup(&self) {
+        let now = Instant::now();
+        self.budgets.retain(|_key, budget| {
+            now.duration_since(budget.window_start) < budget.window
+        });
     }
 
     /// Register a custom budget for an identity (overrides defaults).

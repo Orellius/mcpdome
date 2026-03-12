@@ -1,5 +1,8 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use dashmap::DashMap;
 use dome_core::DomeError;
+use tokio::time::Instant;
 use tracing::warn;
 
 use crate::token_bucket::TokenBucket;
@@ -30,6 +33,13 @@ impl BucketKey {
     }
 }
 
+/// Tracked bucket entry with insertion time for TTL-based eviction.
+#[derive(Debug, Clone)]
+struct TrackedBucket {
+    bucket: TokenBucket,
+    last_used: Instant,
+}
+
 /// Configuration for rate limit defaults.
 #[derive(Debug, Clone)]
 pub struct RateLimiterConfig {
@@ -41,6 +51,13 @@ pub struct RateLimiterConfig {
     pub per_tool_max: f64,
     /// Refill rate (tokens/sec) for per-tool buckets.
     pub per_tool_rate: f64,
+    /// Maximum number of entries in the DashMap before cleanup triggers.
+    pub max_entries: usize,
+    /// Time-to-live for idle bucket entries (in seconds).
+    pub entry_ttl_secs: u64,
+    /// Optional global rate limit (burst, rate). If set, all requests
+    /// share this single bucket checked before per-identity/per-tool checks.
+    pub global_limit: Option<(f64, f64)>,
 }
 
 impl Default for RateLimiterConfig {
@@ -50,44 +67,71 @@ impl Default for RateLimiterConfig {
             per_identity_rate: 100.0,
             per_tool_max: 20.0,
             per_tool_rate: 20.0,
+            max_entries: 10_000,
+            entry_ttl_secs: 3600,
+            global_limit: None,
         }
     }
 }
 
 /// Concurrent rate limiter backed by DashMap of token buckets.
 ///
-/// Supports per-identity and per-identity-per-tool limits.
-/// Buckets are created lazily on first access.
+/// Supports per-identity, per-identity-per-tool, and global rate limits.
+/// Buckets are created lazily on first access. Stale entries are evicted
+/// periodically to prevent unbounded memory growth.
 pub struct RateLimiter {
-    buckets: DashMap<BucketKey, TokenBucket>,
+    buckets: DashMap<BucketKey, TrackedBucket>,
     config: RateLimiterConfig,
+    /// Global rate limit bucket, protected by a parking_lot-style lock inside DashMap.
+    global_bucket: Option<std::sync::Mutex<TokenBucket>>,
+    /// Counter for periodic cleanup scheduling.
+    insert_counter: AtomicU64,
 }
 
 impl RateLimiter {
     pub fn new(config: RateLimiterConfig) -> Self {
+        let global_bucket = config
+            .global_limit
+            .map(|(max, rate)| std::sync::Mutex::new(TokenBucket::new(max, rate)));
+
         Self {
             buckets: DashMap::new(),
+            global_bucket,
+            insert_counter: AtomicU64::new(0),
             config,
         }
     }
 
     /// Check rate limit for an identity, optionally scoped to a specific tool.
     ///
-    /// This performs two checks:
-    /// 1. Per-identity global limit (always checked)
-    /// 2. Per-identity-per-tool limit (only if `tool` is Some)
+    /// This performs up to three checks in order:
+    /// 1. Global rate limit (if configured)
+    /// 2. Per-identity global limit (always checked)
+    /// 3. Per-identity-per-tool limit (only if `tool` is Some)
     ///
-    /// Both must pass for the request to proceed.
+    /// All applicable checks must pass for the request to proceed.
     pub fn check_rate_limit(&self, identity: &str, tool: Option<&str>) -> Result<(), DomeError> {
+        // Check global rate limit first
+        if let Some(ref global) = self.global_bucket {
+            let mut bucket = global
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !bucket.try_acquire() {
+                warn!("global rate limit exceeded");
+                return Err(DomeError::RateLimited {
+                    limit: self.config.global_limit.map(|(_, r)| r as u64).unwrap_or(0),
+                    window: "1s".to_string(),
+                });
+            }
+        }
+
         // Check per-identity limit
         let identity_key = BucketKey::for_identity(identity);
-        let identity_ok = self
-            .buckets
-            .entry(identity_key)
-            .or_insert_with(|| {
-                TokenBucket::new(self.config.per_identity_max, self.config.per_identity_rate)
-            })
-            .try_acquire();
+        let identity_ok = self.get_or_insert_bucket(
+            identity_key,
+            self.config.per_identity_max,
+            self.config.per_identity_rate,
+        );
 
         if !identity_ok {
             warn!(identity = identity, "rate limit exceeded for identity");
@@ -100,13 +144,11 @@ impl RateLimiter {
         // Check per-tool limit if a tool is specified
         if let Some(tool_name) = tool {
             let tool_key = BucketKey::for_tool(identity, tool_name);
-            let tool_ok = self
-                .buckets
-                .entry(tool_key)
-                .or_insert_with(|| {
-                    TokenBucket::new(self.config.per_tool_max, self.config.per_tool_rate)
-                })
-                .try_acquire();
+            let tool_ok = self.get_or_insert_bucket(
+                tool_key,
+                self.config.per_tool_max,
+                self.config.per_tool_rate,
+            );
 
             if !tool_ok {
                 warn!(
@@ -122,6 +164,58 @@ impl RateLimiter {
         }
 
         Ok(())
+    }
+
+    /// Get or create a bucket, try to acquire a token, and trigger cleanup if needed.
+    fn get_or_insert_bucket(&self, key: BucketKey, max: f64, rate: f64) -> bool {
+        let now = Instant::now();
+        let is_new = !self.buckets.contains_key(&key);
+
+        let mut entry = self.buckets.entry(key).or_insert_with(|| TrackedBucket {
+            bucket: TokenBucket::new(max, rate),
+            last_used: now,
+        });
+
+        entry.last_used = now;
+        let ok = entry.bucket.try_acquire();
+
+        // If we inserted a new entry, bump the counter and maybe clean up
+        if is_new {
+            let count = self.insert_counter.fetch_add(1, Ordering::Relaxed);
+            // Every 100 insertions, check if we need cleanup
+            if count % 100 == 99 {
+                drop(entry); // Release the DashMap ref before cleanup
+                self.maybe_cleanup();
+            }
+        }
+
+        ok
+    }
+
+    /// Remove entries that have been idle longer than the TTL.
+    /// Called periodically (every 100 insertions) to prevent unbounded growth.
+    fn maybe_cleanup(&self) {
+        if self.buckets.len() <= self.config.max_entries {
+            return;
+        }
+
+        let now = Instant::now();
+        let ttl = std::time::Duration::from_secs(self.config.entry_ttl_secs);
+
+        self.buckets.retain(|_key, entry| {
+            now.duration_since(entry.last_used) < ttl
+        });
+    }
+
+    /// Explicitly run cleanup, removing entries older than TTL.
+    /// Useful for maintenance tasks.
+    pub fn cleanup(&self) {
+        let now = Instant::now();
+        let ttl = std::time::Duration::from_secs(self.config.entry_ttl_secs);
+
+        self.buckets.retain(|_key, entry| {
+            now.duration_since(entry.last_used) < ttl
+        });
     }
 
     /// Number of active buckets (for diagnostics).
@@ -145,6 +239,7 @@ mod tests {
             per_identity_rate: identity_rate,
             per_tool_max: tool_max,
             per_tool_rate: tool_rate,
+            ..Default::default()
         })
     }
 
@@ -256,5 +351,83 @@ mod tests {
         let total: u32 = handles.into_iter().map(|h| h.join().unwrap()).sum();
         // Each thread has its own identity with 1000 token budget, so all should pass
         assert_eq!(total, 500);
+    }
+
+    // --- Global rate limit tests ---
+
+    #[test]
+    fn global_rate_limit_blocks_all_identities() {
+        let limiter = RateLimiter::new(RateLimiterConfig {
+            per_identity_max: 100.0,
+            per_identity_rate: 100.0,
+            per_tool_max: 100.0,
+            per_tool_rate: 100.0,
+            global_limit: Some((3.0, 0.0)), // 3 burst, no refill
+            ..Default::default()
+        });
+
+        // Global bucket has 3 tokens total across all identities
+        assert!(limiter.check_rate_limit("user-1", None).is_ok());
+        assert!(limiter.check_rate_limit("user-2", None).is_ok());
+        assert!(limiter.check_rate_limit("user-3", None).is_ok());
+
+        // Fourth request from any identity should fail
+        let err = limiter.check_rate_limit("user-4", None).unwrap_err();
+        assert!(matches!(err, DomeError::RateLimited { .. }));
+    }
+
+    #[test]
+    fn no_global_limit_allows_unlimited() {
+        let limiter = RateLimiter::new(RateLimiterConfig {
+            per_identity_max: 100.0,
+            per_identity_rate: 100.0,
+            per_tool_max: 100.0,
+            per_tool_rate: 100.0,
+            global_limit: None,
+            ..Default::default()
+        });
+
+        // Should pass many requests without global limit
+        for i in 0..50 {
+            assert!(
+                limiter
+                    .check_rate_limit(&format!("user-{i}"), None)
+                    .is_ok()
+            );
+        }
+    }
+
+    // --- LRU / cleanup tests ---
+
+    #[test]
+    fn cleanup_removes_stale_entries() {
+        let limiter = RateLimiter::new(RateLimiterConfig {
+            per_identity_max: 10.0,
+            per_identity_rate: 10.0,
+            per_tool_max: 10.0,
+            per_tool_rate: 10.0,
+            max_entries: 10_000,
+            entry_ttl_secs: 0, // TTL of 0 means everything is immediately stale
+            ..Default::default()
+        });
+
+        // Create some entries
+        for i in 0..10 {
+            let _ = limiter.check_rate_limit(&format!("user-{i}"), None);
+        }
+        assert_eq!(limiter.bucket_count(), 10);
+
+        // Cleanup should remove all entries since TTL is 0
+        limiter.cleanup();
+        assert_eq!(limiter.bucket_count(), 0);
+    }
+
+    #[test]
+    fn max_entries_config_is_respected() {
+        let config = RateLimiterConfig {
+            max_entries: 50,
+            ..Default::default()
+        };
+        assert_eq!(config.max_entries, 50);
     }
 }

@@ -3,6 +3,34 @@ use serde_json::Value;
 
 use crate::types::{ArgConstraint, Decision, Identity, Rule};
 
+/// Recursively collect all string values from any JSON structure.
+///
+/// Descends into nested objects and arrays, returning references to
+/// every string leaf value. This prevents evasion by hiding malicious
+/// content inside nested JSON structures.
+fn extract_strings(value: &Value) -> Vec<&str> {
+    let mut out = Vec::new();
+    extract_strings_inner(value, &mut out);
+    out
+}
+
+fn extract_strings_inner<'a>(value: &'a Value, out: &mut Vec<&'a str>) {
+    match value {
+        Value::String(s) => out.push(s.as_str()),
+        Value::Array(arr) => {
+            for item in arr {
+                extract_strings_inner(item, out);
+            }
+        }
+        Value::Object(map) => {
+            for (_key, val) in map {
+                extract_strings_inner(val, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// The core policy engine. Holds rules sorted by priority and evaluates
 /// incoming requests against them. First matching rule wins; no match = deny.
 pub struct PolicyEngine {
@@ -124,6 +152,9 @@ impl PolicyEngine {
     }
 
     /// For allow/audit_only rules: all constraints must pass.
+    ///
+    /// Recursively descends into nested objects and arrays to check
+    /// all string leaf values against the constraint.
     #[allow(clippy::collapsible_if)]
     fn check_arguments_allow(
         &self,
@@ -136,14 +167,16 @@ impl PolicyEngine {
 
             if constraint.param == "*" {
                 for (_key, val) in args_obj {
-                    if let Some(s) = val.as_str() {
+                    let strings = extract_strings(val);
+                    for s in strings {
                         if !self.value_passes_constraint(constraint, deny_regexes, s) {
                             return false;
                         }
                     }
                 }
             } else if let Some(val) = args_obj.get(&constraint.param) {
-                if let Some(s) = val.as_str() {
+                let strings = extract_strings(val);
+                for s in strings {
                     if !self.value_passes_constraint(constraint, deny_regexes, s) {
                         return false;
                     }
@@ -156,6 +189,9 @@ impl PolicyEngine {
     /// For deny rules: the rule matches (returns true) if ANY constraint's
     /// deny_regex fires on ANY argument, or if allow_glob is set and the value
     /// falls outside the allowed set. This is the trigger-based model.
+    ///
+    /// Recursively descends into nested objects and arrays to check
+    /// all string leaf values against the constraint.
     #[allow(clippy::collapsible_if)]
     fn check_arguments_deny(
         &self,
@@ -168,14 +204,16 @@ impl PolicyEngine {
 
             if constraint.param == "*" {
                 for (_key, val) in args_obj {
-                    if let Some(s) = val.as_str() {
+                    let strings = extract_strings(val);
+                    for s in strings {
                         if self.value_triggers_deny(constraint, deny_regexes, s) {
                             return true;
                         }
                     }
                 }
             } else if let Some(val) = args_obj.get(&constraint.param) {
-                if let Some(s) = val.as_str() {
+                let strings = extract_strings(val);
+                for s in strings {
                     if self.value_triggers_deny(constraint, deny_regexes, s) {
                         return true;
                     }
@@ -846,5 +884,101 @@ arguments = [
         // Unknown user -- default deny
         let d = engine.evaluate(&nobody, "read_file", &json!({}));
         assert_eq!(d.effect, Effect::Deny);
+    }
+
+    // --- Recursive argument inspection ---
+
+    #[test]
+    fn deny_regex_catches_secret_in_nested_object() {
+        let engine = engine_from_toml(
+            r#"
+[[rules]]
+id = "block-secrets"
+priority = 1
+effect = "deny"
+identities = "*"
+tools = "*"
+arguments = [
+    { param = "*", deny_regex = ["AKIA[A-Z0-9]{16}"] },
+]
+
+[[rules]]
+id = "allow-all"
+priority = 100
+effect = "allow"
+identities = "*"
+tools = "*"
+"#,
+        );
+        let id = identity("user:a", &[]);
+
+        // Secret hidden inside a nested object
+        let d = engine.evaluate(
+            &id,
+            "send_message",
+            &json!({"data": {"nested": {"deep": "my key AKIAIOSFODNN7EXAMPLE"}}}),
+        );
+        assert_eq!(d.effect, Effect::Deny);
+        assert_eq!(d.rule_id, "block-secrets");
+    }
+
+    #[test]
+    fn deny_regex_catches_secret_in_array() {
+        let engine = engine_from_toml(
+            r#"
+[[rules]]
+id = "block-secrets"
+priority = 1
+effect = "deny"
+identities = "*"
+tools = "*"
+arguments = [
+    { param = "*", deny_regex = ["AKIA[A-Z0-9]{16}"] },
+]
+
+[[rules]]
+id = "allow-all"
+priority = 100
+effect = "allow"
+identities = "*"
+tools = "*"
+"#,
+        );
+        let id = identity("user:a", &[]);
+
+        // Secret hidden inside an array
+        let d = engine.evaluate(
+            &id,
+            "send_message",
+            &json!({"messages": ["hello", "AKIAIOSFODNN7EXAMPLE", "world"]}),
+        );
+        assert_eq!(d.effect, Effect::Deny);
+        assert_eq!(d.rule_id, "block-secrets");
+    }
+
+    #[test]
+    fn allow_rule_rejects_nested_deny_regex_match() {
+        let engine = engine_from_toml(
+            r#"
+[[rules]]
+id = "safe-write"
+priority = 100
+effect = "allow"
+identities = "*"
+tools = ["write_file"]
+arguments = [
+    { param = "content", deny_regex = ["-----BEGIN.*PRIVATE KEY-----"] },
+]
+"#,
+        );
+        let id = identity("user:a", &[]);
+
+        // Private key hidden in nested structure
+        let d = engine.evaluate(
+            &id,
+            "write_file",
+            &json!({"content": {"parts": ["-----BEGIN RSA PRIVATE KEY-----\nMIIE..."]}}),
+        );
+        assert_eq!(d.effect, Effect::Deny); // default deny because allow rule didn't match
     }
 }
