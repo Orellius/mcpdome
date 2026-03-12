@@ -1,5 +1,8 @@
 pub mod stdio;
 
+#[cfg(feature = "http")]
+pub mod http;
+
 use async_trait::async_trait;
 use dome_core::{DomeError, McpMessage};
 

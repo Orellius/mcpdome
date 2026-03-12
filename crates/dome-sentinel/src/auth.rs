@@ -193,6 +193,146 @@ impl Authenticator for PskAuthenticator {
 }
 
 // ---------------------------------------------------------------------------
+// API Key Authenticator
+// ---------------------------------------------------------------------------
+
+/// Configuration for a single API key.
+#[derive(Debug, Clone)]
+pub struct ApiKeyEntry {
+    /// The raw API key value clients must send.
+    pub secret: String,
+
+    /// A stable identifier for this key (used in Identity.principal and audit logs).
+    pub key_id: String,
+
+    /// Labels assigned to anyone authenticating with this key.
+    pub labels: HashSet<String>,
+}
+
+/// Internal entry storing the Argon2id hash of the API key secret.
+struct HashedApiKeyEntry {
+    /// Argon2id hash of the secret (PHC string format).
+    hashed_secret: String,
+
+    /// A stable identifier for this key.
+    key_id: String,
+
+    /// Labels assigned to anyone authenticating with this key.
+    labels: HashSet<String>,
+}
+
+/// Authenticates clients via a `_mcpdome_api_key` field in the `initialize` params.
+///
+/// On construction, all API key secrets are hashed with Argon2id so that the
+/// raw secrets are never stored in memory beyond initialization. Validation
+/// uses constant-time comparison via the argon2 crate.
+pub struct ApiKeyAuthenticator {
+    /// Map from key_id to hashed entry.
+    entries: HashMap<String, HashedApiKeyEntry>,
+}
+
+impl ApiKeyAuthenticator {
+    pub fn new(entries: Vec<ApiKeyEntry>) -> Self {
+        let argon2 = argon2_hasher();
+        let hashed_entries: HashMap<String, HashedApiKeyEntry> = entries
+            .into_iter()
+            .map(|e| {
+                let salt = SaltString::generate(&mut OsRng);
+                let hashed = argon2
+                    .hash_password(e.secret.as_bytes(), &salt)
+                    .expect("Argon2 hashing should not fail with valid params")
+                    .to_string();
+
+                (
+                    e.key_id.clone(),
+                    HashedApiKeyEntry {
+                        hashed_secret: hashed,
+                        key_id: e.key_id,
+                        labels: e.labels,
+                    },
+                )
+            })
+            .collect();
+
+        Self {
+            entries: hashed_entries,
+        }
+    }
+
+    /// Extract the `_mcpdome_api_key` value from an initialize message's params, if present.
+    pub fn extract_api_key(msg: &McpMessage) -> Option<String> {
+        let params = msg.params.as_ref()?;
+        params.get("_mcpdome_api_key")?.as_str().map(String::from)
+    }
+
+    /// Remove the `_mcpdome_api_key` field from the message params so it is not
+    /// forwarded to the downstream MCP server. Returns a new message.
+    pub fn strip_api_key(msg: &McpMessage) -> McpMessage {
+        let mut stripped = msg.clone();
+        if let Some(Value::Object(ref mut map)) = stripped.params {
+            map.remove("_mcpdome_api_key");
+        }
+        stripped
+    }
+
+    /// Verify a provided API key against all stored hashes.
+    fn verify_api_key(&self, provided_secret: &str) -> Option<&HashedApiKeyEntry> {
+        let argon2 = argon2_hasher();
+
+        for entry in self.entries.values() {
+            let parsed_hash = match PasswordHash::new(&entry.hashed_secret) {
+                Ok(h) => h,
+                Err(_) => continue,
+            };
+            if argon2
+                .verify_password(provided_secret.as_bytes(), &parsed_hash)
+                .is_ok()
+            {
+                return Some(entry);
+            }
+        }
+        None
+    }
+}
+
+#[async_trait]
+impl Authenticator for ApiKeyAuthenticator {
+    async fn authenticate(&self, msg: &McpMessage) -> AuthOutcome {
+        // Only applies to initialize requests.
+        if msg.method.as_deref() != Some("initialize") {
+            return AuthOutcome::NotApplicable;
+        }
+
+        let api_key_value = match Self::extract_api_key(msg) {
+            Some(v) => v,
+            None => return AuthOutcome::NotApplicable,
+        };
+
+        match self.verify_api_key(&api_key_value) {
+            Some(entry) => {
+                debug!(key_id = %entry.key_id, "API key authentication succeeded");
+                AuthOutcome::Authenticated(Identity {
+                    principal: format!("api_key:{}", entry.key_id),
+                    auth_method: AuthMethod::ApiKey {
+                        key_id: entry.key_id.clone(),
+                    },
+                    labels: entry.labels.clone(),
+                    resolved_at: std::time::Instant::now(),
+                })
+            }
+            None => {
+                warn!("API key authentication failed: unknown key");
+                AuthOutcome::Failed("invalid API key".to_string())
+            }
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        "api_key"
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Anonymous Authenticator
 // ---------------------------------------------------------------------------
 

@@ -7,6 +7,20 @@ authors.workspace = true
 description = "MCP transport layer — stdio and HTTP proxy"
 repository.workspace = true
 
+[features]
+default = []
+http = [
+    "dep:axum",
+    "dep:tower",
+    "dep:tower-http",
+    "dep:hyper",
+    "dep:tokio-stream",
+    "dep:futures",
+    "dep:uuid",
+    "dep:serde",
+    "dep:async-stream",
+]
+
 [dependencies]
 dome-core.workspace = true
 tokio.workspace = true
@@ -14,3 +28,19 @@ async-trait.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
+
+# HTTP transport (optional, behind "http" feature)
+axum = { workspace = true, optional = true }
+tower = { workspace = true, optional = true }
+tower-http = { workspace = true, optional = true }
+hyper = { workspace = true, optional = true }
+tokio-stream = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+uuid = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+async-stream = { version = "0.3", optional = true }
+
+[dev-dependencies]
+reqwest = { version = "0.12", features = ["json", "stream"] }
+tokio = { workspace = true, features = ["full", "test-util"] }
+futures = "0.3"

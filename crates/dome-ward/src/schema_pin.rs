@@ -225,7 +225,7 @@ fn canonicalize_json(value: &Value) -> Value {
 ///
 /// Object keys are recursively sorted before serialization to ensure
 /// canonical hashing regardless of JSON key ordering.
-fn hash_field(value: Option<&Value>) -> [u8; 32] {
+pub fn hash_field(value: Option<&Value>) -> [u8; 32] {
     let mut hasher = Sha256::new();
     match value {
         Some(v) => {

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use dome_core::{McpMessage, DomeError};
 use dome_ledger::{AuditEntry, Direction, Ledger};
-use dome_policy::{Identity as PolicyIdentity, PolicyEngine};
+use dome_policy::{Identity as PolicyIdentity, SharedPolicyEngine};
 use dome_sentinel::{AnonymousAuthenticator, Authenticator, IdentityResolver, PskAuthenticator, ResolverConfig};
 use dome_throttle::{BudgetTracker, BudgetTrackerConfig, RateLimiter, RateLimiterConfig};
 use dome_transport::stdio::StdioTransport;
@@ -64,7 +64,7 @@ impl Default for GateConfig {
 pub struct Gate {
     config: GateConfig,
     resolver: IdentityResolver,
-    policy_engine: Option<PolicyEngine>,
+    policy_engine: Option<SharedPolicyEngine>,
     rate_limiter: Arc<RateLimiter>,
     budget_tracker: Arc<BudgetTracker>,
     injection_scanner: Arc<InjectionScanner>,
@@ -74,10 +74,15 @@ pub struct Gate {
 
 impl Gate {
     /// Create a new Gate with full interceptor chain.
+    ///
+    /// The `policy_engine` parameter accepts an optional `SharedPolicyEngine`
+    /// (`Arc<ArcSwap<PolicyEngine>>`), which enables hot-reload. The gate reads
+    /// the current policy atomically on every request via `load()`, so swaps
+    /// performed by a [`PolicyWatcher`] are immediately visible without restart.
     pub fn new(
         config: GateConfig,
         authenticators: Vec<Box<dyn Authenticator>>,
-        policy_engine: Option<PolicyEngine>,
+        policy_engine: Option<SharedPolicyEngine>,
         rate_limiter_config: RateLimiterConfig,
         budget_config: BudgetTrackerConfig,
         ledger: Ledger,
@@ -128,7 +133,7 @@ impl Gate {
 
         let gate_identity = Arc::clone(&identity);
         let gate_resolver = self.resolver;
-        let gate_policy = self.policy_engine;
+        let gate_policy = self.policy_engine.clone();
         let gate_rate_limiter = Arc::clone(&self.rate_limiter);
         let gate_budget = Arc::clone(&self.budget_tracker);
         let gate_scanner = Arc::clone(&self.injection_scanner);
@@ -376,7 +381,12 @@ impl Gate {
 
                                 // ── 4. Policy: Authorization ──
                                 if gate_config.enforce_policy {
-                                    if let Some(ref engine) = gate_policy {
+                                    if let Some(ref shared_engine) = gate_policy {
+                                        // Load the current policy atomically. This is
+                                        // lock-free and picks up hot-reloaded changes
+                                        // immediately.
+                                        let engine = shared_engine.load();
+
                                         // For tools/call, evaluate with the tool name;
                                         // for other methods, evaluate with the method itself.
                                         let policy_resource = if method == "tools/call" {

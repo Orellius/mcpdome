@@ -1,3 +1,4 @@
+use chrono::{NaiveTime, Weekday};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
@@ -130,6 +131,132 @@ pub struct RateLimit {
     pub window: String,
 }
 
+/// A time-based or calendar-based condition that must be satisfied for a rule to match.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Condition {
+    /// Current time must fall within the [after, before) window.
+    /// Handles midnight crossing (e.g. after=22:00, before=06:00).
+    TimeWindow {
+        after: NaiveTime,
+        before: NaiveTime,
+        timezone: Option<String>,
+    },
+    /// Current day of week must be in the given list.
+    DayOfWeek { days: Vec<Weekday> },
+}
+
+/// Intermediate serde representation for `Condition` in TOML.
+#[derive(Debug, Deserialize)]
+struct ConditionRaw {
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(default)]
+    after: Option<String>,
+    #[serde(default)]
+    before: Option<String>,
+    #[serde(default)]
+    timezone: Option<String>,
+    #[serde(default)]
+    days: Option<Vec<String>>,
+}
+
+impl<'de> Deserialize<'de> for Condition {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = ConditionRaw::deserialize(deserializer)?;
+        match raw.kind.as_str() {
+            "time_window" => {
+                let after_str = raw.after.ok_or_else(|| {
+                    serde::de::Error::missing_field("after")
+                })?;
+                let before_str = raw.before.ok_or_else(|| {
+                    serde::de::Error::missing_field("before")
+                })?;
+                let after = NaiveTime::parse_from_str(&after_str, "%H:%M")
+                    .map_err(serde::de::Error::custom)?;
+                let before = NaiveTime::parse_from_str(&before_str, "%H:%M")
+                    .map_err(serde::de::Error::custom)?;
+                Ok(Condition::TimeWindow {
+                    after,
+                    before,
+                    timezone: raw.timezone,
+                })
+            }
+            "day_of_week" => {
+                let day_strings = raw.days.ok_or_else(|| {
+                    serde::de::Error::missing_field("days")
+                })?;
+                let days = day_strings
+                    .iter()
+                    .map(|s| parse_weekday(s).ok_or_else(|| {
+                        serde::de::Error::custom(format!("invalid weekday: '{s}'"))
+                    }))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Condition::DayOfWeek { days })
+            }
+            other => Err(serde::de::Error::custom(format!(
+                "unknown condition type: '{other}'"
+            ))),
+        }
+    }
+}
+
+impl Serialize for Condition {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+        match self {
+            Condition::TimeWindow { after, before, timezone } => {
+                let mut map = serializer.serialize_map(None)?;
+                map.serialize_entry("type", "time_window")?;
+                map.serialize_entry("after", &after.format("%H:%M").to_string())?;
+                map.serialize_entry("before", &before.format("%H:%M").to_string())?;
+                if let Some(tz) = timezone {
+                    map.serialize_entry("timezone", tz)?;
+                }
+                map.end()
+            }
+            Condition::DayOfWeek { days } => {
+                let mut map = serializer.serialize_map(None)?;
+                map.serialize_entry("type", "day_of_week")?;
+                let day_strs: Vec<&str> = days.iter().map(|d| weekday_to_str(*d)).collect();
+                map.serialize_entry("days", &day_strs)?;
+                map.end()
+            }
+        }
+    }
+}
+
+/// Parse a weekday abbreviation like "Mon", "Tue", etc.
+fn parse_weekday(s: &str) -> Option<Weekday> {
+    match s {
+        "Mon" => Some(Weekday::Mon),
+        "Tue" => Some(Weekday::Tue),
+        "Wed" => Some(Weekday::Wed),
+        "Thu" => Some(Weekday::Thu),
+        "Fri" => Some(Weekday::Fri),
+        "Sat" => Some(Weekday::Sat),
+        "Sun" => Some(Weekday::Sun),
+        _ => None,
+    }
+}
+
+fn weekday_to_str(d: Weekday) -> &'static str {
+    match d {
+        Weekday::Mon => "Mon",
+        Weekday::Tue => "Tue",
+        Weekday::Wed => "Wed",
+        Weekday::Thu => "Thu",
+        Weekday::Fri => "Fri",
+        Weekday::Sat => "Sat",
+        Weekday::Sun => "Sun",
+    }
+}
+
 /// A single authorization rule.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Rule {
@@ -140,6 +267,8 @@ pub struct Rule {
     pub tools: ToolMatcher,
     #[serde(default)]
     pub arguments: Vec<ArgConstraint>,
+    #[serde(default)]
+    pub conditions: Vec<Condition>,
     #[serde(default)]
     pub rate_limit: Option<RateLimit>,
 }

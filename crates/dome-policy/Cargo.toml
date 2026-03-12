@@ -18,6 +18,14 @@ tracing.workspace = true
 toml = "0.8"
 glob-match = "0.2"
 regex.workspace = true
+chrono.workspace = true
+
+# Hot-reload
+arc-swap.workspace = true
+notify.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "time", "fs"] }
+tempfile = "3"

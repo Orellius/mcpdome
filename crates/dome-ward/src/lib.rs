@@ -11,7 +11,7 @@ pub mod schema_pin;
 
 pub use heuristics::{entropy_score, is_base64_encoded, is_suspiciously_long};
 pub use patterns::{InjectionMatch, InjectionScanner, Severity, normalize_text};
-pub use schema_pin::{SchemaDrift, SchemaDriftType, SchemaPin, SchemaPinStore};
+pub use schema_pin::{SchemaDrift, SchemaDriftType, SchemaPin, SchemaPinStore, hash_field};
 
 use serde_json::Value;
 

@@ -53,14 +53,16 @@ MCPDome sits between your AI agent and any MCP server, intercepting every JSON-R
 
 AI agents are getting access to powerful tools — file systems, databases, APIs, code execution. MCP is the protocol connecting them. But **there's no security layer in the middle**. MCPDome fixes that:
 
-- **Default-deny policy engine** — TOML rules evaluated by priority, first match wins
+- **Default-deny policy engine** — TOML rules with time-window conditions and day-of-week filtering, hot-reloadable via file watcher or SIGHUP
 - **Injection detection** — Regex patterns with Unicode normalization (NFKC, homoglyph transliteration, zero-width stripping), recursive JSON scanning, and heuristic analysis (entropy, Base64, length)
 - **Schema pinning** — Canonical SHA-256 hashes of tool definitions detect and **block** rug pulls and tool shadowing
 - **Hash-chained audit logs** — Tamper-evident NDJSON logging with SHA-256 chain linking, full inbound + outbound coverage
 - **Token-bucket rate limiting** — Global, per-identity, and per-tool limits with LRU eviction and TTL-based cleanup
-- **Pre-shared key authentication** — Argon2id-hashed PSKs with constant-time comparison, automatic credential stripping
+- **Multiple auth methods** — Argon2id-hashed PSKs, API key authentication, OAuth2 scaffolding, with automatic credential stripping
+- **HTTP+SSE transport** — Feature-gated HTTP transport with Server-Sent Events, session management, and CORS support (in addition to stdio)
 - **Full method coverage** — All MCP methods are guarded (not just `tools/call`), with proper JSON-RPC error responses on deny
 - **Outbound scanning** — Server responses are scanned for injection patterns before reaching the AI agent
+- **CLI toolbox** — `validate`, `verify-log`, `hash-schema`, `keygen` subcommands plus unified `--config` file support
 - **0.2ms overhead** — Rust performance, single binary, zero config to start
 
 ## Install
@@ -95,8 +97,24 @@ mcpdome proxy --upstream "..." --enable-schema-pin
 # Rate limiting
 mcpdome proxy --upstream "..." --enable-rate-limit
 
-# Everything
-mcpdome proxy --upstream "..." --enable-ward --enable-schema-pin --enable-rate-limit
+# Everything with a config file
+mcpdome proxy --upstream "..." --config mcpdome.toml
+```
+
+## CLI Tools
+
+```bash
+# Validate a policy file
+mcpdome validate policy.toml
+
+# Verify audit log integrity
+mcpdome verify-log audit.ndjson
+
+# Pre-compute schema pin hashes
+mcpdome hash-schema tools.json
+
+# Generate a pre-shared key
+mcpdome keygen
 ```
 
 ## What It Catches
@@ -152,6 +170,21 @@ arguments = [
 ]
 ```
 
+Time-window conditions:
+
+```toml
+[[rules]]
+id = "business-hours-only"
+priority = 50
+effect = "allow"
+identities = "*"
+tools = ["write_file", "delete_file"]
+conditions = [
+    { type = "time_window", after = "09:00", before = "17:00", timezone = "UTC" },
+    { type = "day_of_week", days = ["Mon", "Tue", "Wed", "Thu", "Fri"] },
+]
+```
+
 See [`mcpdome.example.toml`](mcpdome.example.toml) for a complete policy file.
 
 ## Architecture
@@ -181,16 +214,18 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full deep dive.
 
 ## Test Suite
 
-154 tests covering every security component:
+204 tests covering every security component:
 
 ```
-dome-core       5 tests   (message parsing, error mapping)
-dome-sentinel  17 tests   (PSK auth, Argon2id hashing, chain resolution)
-dome-policy    23 tests   (rules, priority, recursive arg constraints, secrets)
-dome-throttle  18 tests   (token bucket, rate limits, budgets, LRU eviction, global limits)
-dome-ward      63 tests   (injection patterns, Unicode normalization, recursive scanning, schema pins, heuristics)
-dome-ledger    21 tests   (hash chain, tamper detection, file rotation)
-integration     7 tests   (full binary proxy end-to-end)
+dome-core        5 tests   (message parsing, error mapping)
+dome-sentinel   30 tests   (PSK auth, API keys, Argon2id, OAuth2 stub, chain resolution)
+dome-policy     39 tests   (rules, priority, recursive args, time-windows, hot-reload)
+dome-throttle   22 tests   (token bucket, rate limits, budgets, LRU eviction, global limits)
+dome-ward       56 tests   (injection patterns, Unicode normalization, recursive scanning, schema pins, heuristics)
+dome-ledger     21 tests   (hash chain, tamper detection, file rotation)
+dome-transport   5 tests   (HTTP+SSE connection, roundtrip, CORS, cleanup)
+mcpdome binary  19 tests   (CLI subcommands: validate, verify-log, hash-schema, keygen)
+integration      7 tests   (full binary proxy end-to-end)
 ```
 
 ```bash
@@ -204,7 +239,8 @@ cargo test --workspace
 | 1 | Transparent stdio proxy, audit logging | Done |
 | 2 | TOML policy engine, PSK authentication, default-deny | Done |
 | 3 | Injection detection, schema pinning, rate limiting | Done |
-| 4 | HTTP transport, OAuth/mTLS, budget tracking, config hot-reload | Next |
+| 4 | HTTP+SSE transport, API key auth, time-window policies, config hot-reload, CLI tools | Done |
+| 5 | OAuth 2.0 / mTLS, dashboard UI, remote policy fetching | Next |
 
 ## License
 

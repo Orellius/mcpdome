@@ -6,10 +6,15 @@
 
 pub mod auth;
 pub mod identity;
+pub mod oauth;
 pub mod resolver;
 
-pub use auth::{AnonymousAuthenticator, AuthOutcome, Authenticator, PskAuthenticator, PskEntry};
+pub use auth::{
+    AnonymousAuthenticator, ApiKeyAuthenticator, ApiKeyEntry, AuthOutcome, Authenticator,
+    PskAuthenticator, PskEntry,
+};
 pub use identity::{AuthMethod, Identity};
+pub use oauth::OAuth2Authenticator;
 pub use resolver::{IdentityResolver, ResolverConfig};
 
 #[cfg(test)]
@@ -342,5 +347,188 @@ mod tests {
         let msg = make_initialize_msg(None);
         let result = resolver.resolve(&msg).await;
         assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // API Key Authenticator
+    // -----------------------------------------------------------------------
+
+    fn make_initialize_msg_with_api_key(api_key: Option<&str>) -> McpMessage {
+        let mut params = json!({"capabilities": {}});
+        if let Some(key) = api_key {
+            params
+                .as_object_mut()
+                .unwrap()
+                .insert("_mcpdome_api_key".to_string(), json!(key));
+        }
+        McpMessage {
+            jsonrpc: "2.0".to_string(),
+            id: Some(json!(1)),
+            method: Some("initialize".to_string()),
+            params: Some(params),
+            result: None,
+            error: None,
+        }
+    }
+
+    fn make_api_key_entries() -> Vec<ApiKeyEntry> {
+        vec![
+            ApiKeyEntry {
+                secret: "mcpdome_dev_abc123".to_string(),
+                key_id: "dev-api-1".to_string(),
+                labels: HashSet::from([
+                    "role:developer".to_string(),
+                    "env:staging".to_string(),
+                ]),
+            },
+            ApiKeyEntry {
+                secret: "mcpdome_admin_xyz789".to_string(),
+                key_id: "admin-api-1".to_string(),
+                labels: HashSet::from(["role:admin".to_string()]),
+            },
+        ]
+    }
+
+    #[test]
+    fn extract_api_key_from_initialize_params() {
+        let msg = make_initialize_msg_with_api_key(Some("mcpdome_dev_abc123"));
+        let key = ApiKeyAuthenticator::extract_api_key(&msg);
+        assert_eq!(key, Some("mcpdome_dev_abc123".to_string()));
+    }
+
+    #[test]
+    fn extract_api_key_returns_none_when_absent() {
+        let msg = make_initialize_msg_with_api_key(None);
+        let key = ApiKeyAuthenticator::extract_api_key(&msg);
+        assert_eq!(key, None);
+    }
+
+    #[tokio::test]
+    async fn api_key_authenticator_succeeds_with_valid_key() {
+        let auth = ApiKeyAuthenticator::new(make_api_key_entries());
+        let msg = make_initialize_msg_with_api_key(Some("mcpdome_dev_abc123"));
+
+        match auth.authenticate(&msg).await {
+            AuthOutcome::Authenticated(id) => {
+                assert_eq!(id.principal, "api_key:dev-api-1");
+                assert!(matches!(
+                    id.auth_method,
+                    AuthMethod::ApiKey { ref key_id } if key_id == "dev-api-1"
+                ));
+            }
+            other => panic!("expected Authenticated, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn api_key_authenticator_fails_with_invalid_key() {
+        let auth = ApiKeyAuthenticator::new(make_api_key_entries());
+        let msg = make_initialize_msg_with_api_key(Some("wrong-key"));
+
+        match auth.authenticate(&msg).await {
+            AuthOutcome::Failed(reason) => {
+                assert!(reason.contains("invalid"), "reason: {reason}");
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn api_key_authenticator_not_applicable_for_non_initialize() {
+        let auth = ApiKeyAuthenticator::new(make_api_key_entries());
+        let msg = McpMessage {
+            jsonrpc: "2.0".to_string(),
+            id: Some(json!(2)),
+            method: Some("tools/call".to_string()),
+            params: Some(json!({"name": "read_file", "_mcpdome_api_key": "mcpdome_dev_abc123"})),
+            result: None,
+            error: None,
+        };
+
+        match auth.authenticate(&msg).await {
+            AuthOutcome::NotApplicable => {} // correct
+            other => panic!("expected NotApplicable, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn api_key_authenticator_not_applicable_when_no_field() {
+        let auth = ApiKeyAuthenticator::new(make_api_key_entries());
+        let msg = make_initialize_msg_with_api_key(None);
+
+        match auth.authenticate(&msg).await {
+            AuthOutcome::NotApplicable => {} // correct
+            other => panic!("expected NotApplicable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn strip_api_key_removes_field_from_params() {
+        let msg = make_initialize_msg_with_api_key(Some("mcpdome_dev_abc123"));
+        assert!(
+            msg.params
+                .as_ref()
+                .unwrap()
+                .get("_mcpdome_api_key")
+                .is_some()
+        );
+
+        let stripped = ApiKeyAuthenticator::strip_api_key(&msg);
+        assert!(
+            stripped
+                .params
+                .as_ref()
+                .unwrap()
+                .get("_mcpdome_api_key")
+                .is_none()
+        );
+        assert!(
+            stripped
+                .params
+                .as_ref()
+                .unwrap()
+                .get("capabilities")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn strip_api_key_is_noop_when_field_absent() {
+        let msg = make_initialize_msg_with_api_key(None);
+        let stripped = ApiKeyAuthenticator::strip_api_key(&msg);
+        assert_eq!(
+            msg.params.as_ref().unwrap().to_string(),
+            stripped.params.as_ref().unwrap().to_string(),
+        );
+    }
+
+    #[tokio::test]
+    async fn api_key_auth_assigns_configured_labels() {
+        let auth = ApiKeyAuthenticator::new(make_api_key_entries());
+        let msg = make_initialize_msg_with_api_key(Some("mcpdome_dev_abc123"));
+
+        match auth.authenticate(&msg).await {
+            AuthOutcome::Authenticated(id) => {
+                assert!(id.has_label("role:developer"));
+                assert!(id.has_label("env:staging"));
+                assert!(!id.has_label("role:admin"));
+            }
+            other => panic!("expected Authenticated, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn different_api_key_gets_different_labels() {
+        let auth = ApiKeyAuthenticator::new(make_api_key_entries());
+        let msg = make_initialize_msg_with_api_key(Some("mcpdome_admin_xyz789"));
+
+        match auth.authenticate(&msg).await {
+            AuthOutcome::Authenticated(id) => {
+                assert_eq!(id.principal, "api_key:admin-api-1");
+                assert!(id.has_label("role:admin"));
+                assert!(!id.has_label("role:developer"));
+            }
+            other => panic!("expected Authenticated, got {other:?}"),
+        }
     }
 }

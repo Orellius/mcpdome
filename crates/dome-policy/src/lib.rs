@@ -12,10 +12,13 @@
 pub mod evaluator;
 pub mod parser;
 pub mod types;
+pub mod watcher;
 
 // Re-exports for convenience.
 pub use evaluator::{PolicyBuildError, PolicyEngine};
 pub use parser::{PolicyParseError, parse_policy};
 pub use types::{
-    ArgConstraint, Decision, Effect, Identity, IdentityMatcher, RateLimit, Rule, ToolMatcher,
+    ArgConstraint, Condition, Decision, Effect, Identity, IdentityMatcher, RateLimit, Rule,
+    ToolMatcher,
 };
+pub use watcher::{PolicyWatcher, SharedPolicyEngine, WatcherError};

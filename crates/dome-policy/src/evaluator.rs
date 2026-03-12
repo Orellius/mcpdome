@@ -1,7 +1,8 @@
+use chrono::{Datelike, NaiveTime, Utc, Weekday};
 use regex::Regex;
 use serde_json::Value;
 
-use crate::types::{ArgConstraint, Decision, Identity, Rule};
+use crate::types::{ArgConstraint, Condition, Decision, Identity, Rule};
 
 /// Recursively collect all string values from any JSON structure.
 ///
@@ -33,6 +34,7 @@ fn extract_strings_inner<'a>(value: &'a Value, out: &mut Vec<&'a str>) {
 
 /// The core policy engine. Holds rules sorted by priority and evaluates
 /// incoming requests against them. First matching rule wins; no match = deny.
+#[derive(Debug)]
 pub struct PolicyEngine {
     rules: Vec<Rule>,
     /// Pre-compiled deny regexes, indexed parallel to rules then to arg constraints.
@@ -78,6 +80,19 @@ impl PolicyEngine {
     /// - `tool`: the tool name being called
     /// - `args`: the arguments JSON object (may be null/empty)
     pub fn evaluate(&self, identity: &Identity, tool: &str, args: &Value) -> Decision {
+        let now = Utc::now();
+        self.evaluate_at(identity, tool, args, now.time(), now.weekday())
+    }
+
+    /// Evaluate with an explicit time and day (for testing and timezone-adjusted calls).
+    pub fn evaluate_at(
+        &self,
+        identity: &Identity,
+        tool: &str,
+        args: &Value,
+        current_time: NaiveTime,
+        current_day: Weekday,
+    ) -> Decision {
         for (rule_idx, rule) in self.rules.iter().enumerate() {
             if !rule.identities.matches(identity) {
                 continue;
@@ -86,6 +101,9 @@ impl PolicyEngine {
                 continue;
             }
             if !self.check_arguments(rule_idx, rule, args) {
+                continue;
+            }
+            if !Self::check_conditions(&rule.conditions, current_time, current_day) {
                 continue;
             }
 
@@ -111,6 +129,27 @@ impl PolicyEngine {
         );
 
         Decision::default_deny()
+    }
+
+    /// Check all conditions on a rule. Returns true if all conditions are met
+    /// (or if the rule has no conditions).
+    fn check_conditions(
+        conditions: &[Condition],
+        current_time: NaiveTime,
+        current_day: Weekday,
+    ) -> bool {
+        conditions.iter().all(|cond| match cond {
+            Condition::TimeWindow { after, before, .. } => {
+                if after <= before {
+                    // Normal window, e.g. 09:00..17:00
+                    current_time >= *after && current_time < *before
+                } else {
+                    // Midnight-crossing window, e.g. 22:00..06:00
+                    current_time >= *after || current_time < *before
+                }
+            }
+            Condition::DayOfWeek { days } => days.contains(&current_day),
+        })
     }
 
     /// Check all argument constraints for a rule. Returns true if the args
@@ -980,5 +1019,263 @@ arguments = [
             &json!({"content": {"parts": ["-----BEGIN RSA PRIVATE KEY-----\nMIIE..."]}}),
         );
         assert_eq!(d.effect, Effect::Deny); // default deny because allow rule didn't match
+    }
+
+    // --- Time-window condition tests ---
+
+    #[test]
+    fn rule_matches_within_time_window() {
+        let engine = engine_from_toml(
+            r#"
+[[rules]]
+id = "business-hours"
+priority = 100
+effect = "allow"
+identities = "*"
+tools = ["write_file"]
+conditions = [
+    { type = "time_window", after = "09:00", before = "17:00", timezone = "UTC" },
+]
+"#,
+        );
+        let id = identity("user:a", &[]);
+
+        // 12:00 is within 09:00-17:00
+        let d = engine.evaluate_at(
+            &id,
+            "write_file",
+            &json!({}),
+            NaiveTime::from_hms_opt(12, 0, 0).unwrap(),
+            Weekday::Mon,
+        );
+        assert_eq!(d.effect, Effect::Allow);
+        assert_eq!(d.rule_id, "business-hours");
+    }
+
+    #[test]
+    fn rule_does_not_match_outside_time_window() {
+        let engine = engine_from_toml(
+            r#"
+[[rules]]
+id = "business-hours"
+priority = 100
+effect = "allow"
+identities = "*"
+tools = ["write_file"]
+conditions = [
+    { type = "time_window", after = "09:00", before = "17:00", timezone = "UTC" },
+]
+"#,
+        );
+        let id = identity("user:a", &[]);
+
+        // 20:00 is outside 09:00-17:00
+        let d = engine.evaluate_at(
+            &id,
+            "write_file",
+            &json!({}),
+            NaiveTime::from_hms_opt(20, 0, 0).unwrap(),
+            Weekday::Mon,
+        );
+        assert_eq!(d.effect, Effect::Deny);
+        assert_eq!(d.rule_id, "__default_deny");
+    }
+
+    #[test]
+    fn midnight_crossing_time_window_matches_late_night() {
+        let engine = engine_from_toml(
+            r#"
+[[rules]]
+id = "night-shift"
+priority = 100
+effect = "allow"
+identities = "*"
+tools = ["monitor"]
+conditions = [
+    { type = "time_window", after = "22:00", before = "06:00" },
+]
+"#,
+        );
+        let id = identity("user:a", &[]);
+
+        // 23:30 is within 22:00-06:00
+        let d = engine.evaluate_at(
+            &id,
+            "monitor",
+            &json!({}),
+            NaiveTime::from_hms_opt(23, 30, 0).unwrap(),
+            Weekday::Mon,
+        );
+        assert_eq!(d.effect, Effect::Allow);
+
+        // 03:00 is also within 22:00-06:00
+        let d = engine.evaluate_at(
+            &id,
+            "monitor",
+            &json!({}),
+            NaiveTime::from_hms_opt(3, 0, 0).unwrap(),
+            Weekday::Mon,
+        );
+        assert_eq!(d.effect, Effect::Allow);
+
+        // 12:00 is outside 22:00-06:00
+        let d = engine.evaluate_at(
+            &id,
+            "monitor",
+            &json!({}),
+            NaiveTime::from_hms_opt(12, 0, 0).unwrap(),
+            Weekday::Mon,
+        );
+        assert_eq!(d.effect, Effect::Deny);
+    }
+
+    #[test]
+    fn day_of_week_condition_matches() {
+        let engine = engine_from_toml(
+            r#"
+[[rules]]
+id = "weekdays-only"
+priority = 100
+effect = "allow"
+identities = "*"
+tools = ["deploy"]
+conditions = [
+    { type = "day_of_week", days = ["Mon", "Tue", "Wed", "Thu", "Fri"] },
+]
+"#,
+        );
+        let id = identity("user:a", &[]);
+
+        // Wednesday is a weekday
+        let d = engine.evaluate_at(
+            &id,
+            "deploy",
+            &json!({}),
+            NaiveTime::from_hms_opt(12, 0, 0).unwrap(),
+            Weekday::Wed,
+        );
+        assert_eq!(d.effect, Effect::Allow);
+
+        // Saturday is not a weekday
+        let d = engine.evaluate_at(
+            &id,
+            "deploy",
+            &json!({}),
+            NaiveTime::from_hms_opt(12, 0, 0).unwrap(),
+            Weekday::Sat,
+        );
+        assert_eq!(d.effect, Effect::Deny);
+    }
+
+    #[test]
+    fn combined_time_and_day_conditions() {
+        let engine = engine_from_toml(
+            r#"
+[[rules]]
+id = "business-hours-weekdays"
+priority = 100
+effect = "allow"
+identities = "*"
+tools = ["write_file"]
+conditions = [
+    { type = "time_window", after = "09:00", before = "17:00" },
+    { type = "day_of_week", days = ["Mon", "Tue", "Wed", "Thu", "Fri"] },
+]
+"#,
+        );
+        let id = identity("user:a", &[]);
+
+        // Wednesday at 10:00 -- both conditions met
+        let d = engine.evaluate_at(
+            &id,
+            "write_file",
+            &json!({}),
+            NaiveTime::from_hms_opt(10, 0, 0).unwrap(),
+            Weekday::Wed,
+        );
+        assert_eq!(d.effect, Effect::Allow);
+
+        // Wednesday at 20:00 -- day ok, time not ok
+        let d = engine.evaluate_at(
+            &id,
+            "write_file",
+            &json!({}),
+            NaiveTime::from_hms_opt(20, 0, 0).unwrap(),
+            Weekday::Wed,
+        );
+        assert_eq!(d.effect, Effect::Deny);
+
+        // Saturday at 10:00 -- time ok, day not ok
+        let d = engine.evaluate_at(
+            &id,
+            "write_file",
+            &json!({}),
+            NaiveTime::from_hms_opt(10, 0, 0).unwrap(),
+            Weekday::Sat,
+        );
+        assert_eq!(d.effect, Effect::Deny);
+    }
+
+    #[test]
+    fn rules_without_conditions_still_work() {
+        let engine = engine_from_toml(
+            r#"
+[[rules]]
+id = "no-conditions"
+priority = 100
+effect = "allow"
+identities = "*"
+tools = "*"
+"#,
+        );
+        let id = identity("user:a", &[]);
+
+        // Should match regardless of time/day (no conditions)
+        let d = engine.evaluate_at(
+            &id,
+            "anything",
+            &json!({}),
+            NaiveTime::from_hms_opt(3, 0, 0).unwrap(),
+            Weekday::Sun,
+        );
+        assert_eq!(d.effect, Effect::Allow);
+    }
+
+    #[test]
+    fn time_window_boundary_before_is_exclusive() {
+        let engine = engine_from_toml(
+            r#"
+[[rules]]
+id = "exact-boundary"
+priority = 100
+effect = "allow"
+identities = "*"
+tools = ["test"]
+conditions = [
+    { type = "time_window", after = "09:00", before = "17:00" },
+]
+"#,
+        );
+        let id = identity("user:a", &[]);
+
+        // Exactly at `after` -- should match (inclusive)
+        let d = engine.evaluate_at(
+            &id,
+            "test",
+            &json!({}),
+            NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
+            Weekday::Mon,
+        );
+        assert_eq!(d.effect, Effect::Allow);
+
+        // Exactly at `before` -- should NOT match (exclusive)
+        let d = engine.evaluate_at(
+            &id,
+            "test",
+            &json!({}),
+            NaiveTime::from_hms_opt(17, 0, 0).unwrap(),
+            Weekday::Mon,
+        );
+        assert_eq!(d.effect, Effect::Deny);
     }
 }

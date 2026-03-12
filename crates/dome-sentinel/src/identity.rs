@@ -11,6 +11,19 @@ pub enum AuthMethod {
     /// Pre-shared key sent in initialize params.
     PreSharedKey { key_id: String },
 
+    /// API key sent in initialize params.
+    ApiKey { key_id: String },
+
+    /// OAuth 2.0 JWT bearer token.
+    OAuth2 {
+        issuer: String,
+        subject: String,
+        scopes: Vec<String>,
+    },
+
+    /// Mutual TLS client certificate.
+    MutualTls { fingerprint: String, cn: String },
+
     /// No credentials provided.
     Anonymous,
 }
@@ -22,6 +35,13 @@ impl std::fmt::Display for AuthMethod {
                 write!(f, "unix_peer_creds(uid={uid}, gid={gid}, pid={pid})")
             }
             Self::PreSharedKey { key_id } => write!(f, "psk(key_id={key_id})"),
+            Self::ApiKey { key_id } => write!(f, "api_key(key_id={key_id})"),
+            Self::OAuth2 {
+                issuer, subject, ..
+            } => write!(f, "oauth2(issuer={issuer}, subject={subject})"),
+            Self::MutualTls { fingerprint, cn } => {
+                write!(f, "mtls(cn={cn}, fingerprint={fingerprint})")
+            }
             Self::Anonymous => write!(f, "anonymous"),
         }
     }

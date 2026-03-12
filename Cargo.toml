@@ -3,7 +3,7 @@ members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 license = "Apache-2.0"
 authors = ["Orel Ohayon <orel@orellius.ai>"]
@@ -46,18 +46,36 @@ regex = "1"
 toml = "0.8"
 glob-match = "0.2"
 
+# Random
+rand = "0.8"
+
+# Encoding
+base64 = "0.22"
+
 # Concurrency
 dashmap = "6"
+arc-swap = "1"
+
+# File watching
+notify = { version = "7", default-features = false, features = ["macos_fsevent"] }
+
+# HTTP / SSE transport
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors"] }
+hyper = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+futures = "0.3"
 
 # Internal crates
-dome-core = { version = "0.2.0", path = "crates/dome-core" }
-dome-ward = { version = "0.2.0", path = "crates/dome-ward" }
-dome-transport = { version = "0.2.0", path = "crates/dome-transport" }
-dome-gate = { version = "0.2.0", path = "crates/dome-gate" }
-dome-ledger = { version = "0.2.0", path = "crates/dome-ledger" }
-dome-sentinel = { version = "0.2.0", path = "crates/dome-sentinel" }
-dome-throttle = { version = "0.2.0", path = "crates/dome-throttle" }
-dome-policy = { version = "0.2.0", path = "crates/dome-policy" }
+dome-core = { version = "0.3.0", path = "crates/dome-core" }
+dome-ward = { version = "0.3.0", path = "crates/dome-ward" }
+dome-transport = { version = "0.3.0", path = "crates/dome-transport" }
+dome-gate = { version = "0.3.0", path = "crates/dome-gate" }
+dome-ledger = { version = "0.3.0", path = "crates/dome-ledger" }
+dome-sentinel = { version = "0.3.0", path = "crates/dome-sentinel" }
+dome-throttle = { version = "0.3.0", path = "crates/dome-throttle" }
+dome-policy = { version = "0.3.0", path = "crates/dome-policy" }
 
 [package]
 name = "mcpdome"
@@ -90,14 +108,26 @@ clap.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+toml.workspace = true
+sha2.workspace = true
+rand.workspace = true
+base64.workspace = true
+arc-swap.workspace = true
 
 [dev-dependencies]
 dome-core.workspace = true
 dome-transport.workspace = true
 dome-gate.workspace = true
+dome-ledger = { workspace = true, features = ["test-support"] }
+dome-policy.workspace = true
+dome-ward.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+tempfile = "3"
 
 [[test]]
 name = "proxy_test"
