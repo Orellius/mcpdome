@@ -4,10 +4,11 @@ Injection detection, schema integrity verification, and heuristic analysis for M
 
 ## What it does
 
-- Scans tool arguments and descriptions for known injection patterns (prompt injection, command injection, path traversal) using a compiled regex pattern set.
-- Implements schema pinning: cryptographically hashes tool schemas on first `tools/list` response and detects drift (added, removed, or modified tools) on subsequent responses.
-- Provides heuristic analysis utilities: Shannon entropy scoring, Base64 encoding detection, and suspicious length checks for identifying obfuscated payloads.
-- Returns structured `InjectionMatch` and `SchemaDrift` results with severity levels for audit logging and policy decisions.
+- Scans tool arguments with **recursive JSON extraction** — walks nested objects and arrays to scan every string leaf, preventing evasion via nested payloads.
+- **Unicode normalization** before scanning: NFKC normalization, zero-width character stripping, Cyrillic/Greek homoglyph transliteration, and Unicode whitespace collapsing.
+- Implements schema pinning with **canonical JSON hashing** (recursively sorted keys) for deterministic SHA-256 fingerprints immune to key ordering differences.
+- **Combined pattern + heuristic scanning**: regex patterns for injection/exfiltration plus entropy scoring (>4.5), Base64 detection, and suspicious length checks in a single `scan_with_heuristics()` pass.
+- Returns structured `InjectionMatch`, `SchemaDrift`, and `ScanResult` values with severity levels for audit logging and policy decisions.
 
 ## Usage
 

@@ -6,7 +6,7 @@ Authentication and identity resolution for MCPDome.
 
 - Resolves raw MCP connections into typed `Identity` values with principal names, auth methods, and label sets.
 - Chains pluggable `Authenticator` strategies with first-match semantics: if credentials are present but invalid, the chain stops (no fallthrough to weaker methods).
-- Ships with built-in authenticators: `PskAuthenticator` for pre-shared key validation and `AnonymousAuthenticator` for open access.
+- Ships with built-in authenticators: `PskAuthenticator` with **Argon2id password hashing** and **constant-time comparison** (via `subtle`), plus `AnonymousAuthenticator` for open access.
 - Strips credential fields (e.g., `_mcpdome_psk`) from forwarded messages so secrets never reach the upstream MCP server.
 - Supports label-based identity metadata (e.g., `role:admin`, `env:staging`) for downstream policy evaluation.
 

@@ -8,6 +8,7 @@ TOML-based policy engine for MCPDome with default-deny authorization.
 - Evaluates requests against rules in priority order (lowest number = highest priority), with first-match-wins semantics.
 - Enforces default-deny: if no rule matches a request, it is denied.
 - Supports identity matching by principal name or label (e.g., `role:admin`), and tool matching by exact name or glob pattern.
+- **Recursive argument inspection** — deny_regex and allow_glob constraints descend into nested JSON objects and arrays, preventing bypass via nested payloads.
 - Returns structured `Decision` values with the matching rule ID, effect, and metadata for audit logging.
 
 ## Usage

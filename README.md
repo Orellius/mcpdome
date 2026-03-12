@@ -54,11 +54,13 @@ MCPDome sits between your AI agent and any MCP server, intercepting every JSON-R
 AI agents are getting access to powerful tools — file systems, databases, APIs, code execution. MCP is the protocol connecting them. But **there's no security layer in the middle**. MCPDome fixes that:
 
 - **Default-deny policy engine** — TOML rules evaluated by priority, first match wins
-- **Injection detection** — Regex patterns catch prompt injection, data exfiltration, encoding evasion
-- **Schema pinning** — SHA-256 hashes of tool definitions detect rug pulls and tool shadowing
-- **Hash-chained audit logs** — Tamper-evident NDJSON logging with SHA-256 chain linking
-- **Token-bucket rate limiting** — Per-identity and per-tool limits with DashMap concurrency
-- **Pre-shared key authentication** — Identity resolution chain with label-based policy matching
+- **Injection detection** — Regex patterns with Unicode normalization (NFKC, homoglyph transliteration, zero-width stripping), recursive JSON scanning, and heuristic analysis (entropy, Base64, length)
+- **Schema pinning** — Canonical SHA-256 hashes of tool definitions detect and **block** rug pulls and tool shadowing
+- **Hash-chained audit logs** — Tamper-evident NDJSON logging with SHA-256 chain linking, full inbound + outbound coverage
+- **Token-bucket rate limiting** — Global, per-identity, and per-tool limits with LRU eviction and TTL-based cleanup
+- **Pre-shared key authentication** — Argon2id-hashed PSKs with constant-time comparison, automatic credential stripping
+- **Full method coverage** — All MCP methods are guarded (not just `tools/call`), with proper JSON-RPC error responses on deny
+- **Outbound scanning** — Server responses are scanned for injection patterns before reaching the AI agent
 - **0.2ms overhead** — Rust performance, single binary, zero config to start
 
 ## Install
@@ -103,13 +105,16 @@ mcpdome proxy --upstream "..." --enable-ward --enable-schema-pin --enable-rate-l
 
 | Threat | How MCPDome Stops It |
 |--------|---------------------|
-| Prompt injection in tool args | Ward scans for "ignore previous instructions", role hijacking, etc. |
-| Secret leakage (AWS keys, PATs) | Policy deny_regex blocks `AKIA...`, `ghp_...`, private keys |
-| Tool rug pulls | Schema pinning detects when a tool's definition silently changes |
-| Data exfiltration | Ward detects "send the password to...", encoding evasion |
-| Unauthorized tool access | Default-deny policy with identity labels and tool matching |
-| Abuse / runaway agents | Token-bucket rate limiting per identity and per tool |
-| Tampering with audit trail | SHA-256 hash chain makes retroactive log editing detectable |
+| Prompt injection in tool args | Ward scans with Unicode normalization, recursive JSON extraction, and heuristic analysis |
+| Unicode/encoding evasion | NFKC normalization, homoglyph transliteration, zero-width character stripping |
+| Secret leakage (AWS keys, PATs) | Policy deny_regex with recursive argument inspection (catches nested payloads) |
+| Tool rug pulls | Schema pinning with canonical JSON hashing **blocks** critical drift (not just warns) |
+| Data exfiltration | Ward detects exfil patterns; outbound scanning catches malicious server responses |
+| Unauthorized tool access | Default-deny policy on **all** MCP methods, not just tool calls |
+| Pre-initialize attacks | Session enforcement blocks all requests before authenticated `initialize` |
+| Abuse / runaway agents | Global + per-identity + per-tool rate limiting with LRU eviction |
+| Credential leakage | Argon2id PSK hashing, automatic credential stripping before forwarding |
+| Tampering with audit trail | SHA-256 hash chain with full inbound + outbound audit coverage |
 
 </div>
 
@@ -167,21 +172,23 @@ mcpdome (binary)
 
 **Interceptor chain order** (inbound):
 ```
-sentinel → throttle → policy → ward → ledger → upstream server
+sentinel → throttle → ward → policy → ledger → upstream server
 ```
+
+Ward runs **before** policy so injection detection cannot be bypassed by overly permissive authorization rules.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full deep dive.
 
 ## Test Suite
 
-127 tests covering every security component:
+154 tests covering every security component:
 
 ```
 dome-core       5 tests   (message parsing, error mapping)
-dome-sentinel  17 tests   (PSK auth, anonymous, chain resolution)
-dome-policy    23 tests   (rules, priority, arg constraints, secrets)
-dome-throttle  18 tests   (token bucket, rate limits, budgets, concurrency)
-dome-ward      36 tests   (injection patterns, schema pins, heuristics)
+dome-sentinel  17 tests   (PSK auth, Argon2id hashing, chain resolution)
+dome-policy    23 tests   (rules, priority, recursive arg constraints, secrets)
+dome-throttle  18 tests   (token bucket, rate limits, budgets, LRU eviction, global limits)
+dome-ward      63 tests   (injection patterns, Unicode normalization, recursive scanning, schema pins, heuristics)
 dome-ledger    21 tests   (hash chain, tamper detection, file rotation)
 integration     7 tests   (full binary proxy end-to-end)
 ```
