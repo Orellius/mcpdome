@@ -376,10 +376,7 @@ mod tests {
             ApiKeyEntry {
                 secret: "mcpdome_dev_abc123".to_string(),
                 key_id: "dev-api-1".to_string(),
-                labels: HashSet::from([
-                    "role:developer".to_string(),
-                    "env:staging".to_string(),
-                ]),
+                labels: HashSet::from(["role:developer".to_string(), "env:staging".to_string()]),
             },
             ApiKeyEntry {
                 secret: "mcpdome_admin_xyz789".to_string(),

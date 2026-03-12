@@ -104,7 +104,8 @@ pub fn scan_json_value(scanner: &InjectionScanner, value: &Value) -> ScanResult 
         all_matches.extend(result.pattern_matches);
         flags.high_entropy = flags.high_entropy || result.heuristic_flags.high_entropy;
         flags.base64_encoded = flags.base64_encoded || result.heuristic_flags.base64_encoded;
-        flags.suspiciously_long = flags.suspiciously_long || result.heuristic_flags.suspiciously_long;
+        flags.suspiciously_long =
+            flags.suspiciously_long || result.heuristic_flags.suspiciously_long;
     }
 
     ScanResult {

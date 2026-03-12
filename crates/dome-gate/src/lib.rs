@@ -2,14 +2,16 @@
 
 use std::sync::Arc;
 
-use dome_core::{McpMessage, DomeError};
+use dome_core::{DomeError, McpMessage};
 use dome_ledger::{AuditEntry, Direction, Ledger};
 use dome_policy::{Identity as PolicyIdentity, SharedPolicyEngine};
-use dome_sentinel::{AnonymousAuthenticator, Authenticator, IdentityResolver, PskAuthenticator, ResolverConfig};
+use dome_sentinel::{
+    AnonymousAuthenticator, Authenticator, IdentityResolver, PskAuthenticator, ResolverConfig,
+};
 use dome_throttle::{BudgetTracker, BudgetTrackerConfig, RateLimiter, RateLimiterConfig};
 use dome_transport::stdio::StdioTransport;
-use dome_ward::{InjectionScanner, SchemaPinStore};
 use dome_ward::schema_pin::DriftSeverity;
+use dome_ward::{InjectionScanner, SchemaPinStore};
 
 use chrono::Utc;
 use serde_json::Value;
@@ -197,7 +199,10 @@ impl Gate {
                                                 -32600,
                                                 "Authentication failed",
                                             );
-                                            if let Err(we) = write_to_client(&gate_client_writer, &err_resp).await {
+                                            if let Err(we) =
+                                                write_to_client(&gate_client_writer, &err_resp)
+                                                    .await
+                                            {
                                                 error!(%we, "failed to send auth error to client");
                                                 break;
                                             }
@@ -219,7 +224,9 @@ impl Gate {
                                             -32600,
                                             "Session not initialized",
                                         );
-                                        if let Err(we) = write_to_client(&gate_client_writer, &err_resp).await {
+                                        if let Err(we) =
+                                            write_to_client(&gate_client_writer, &err_resp).await
+                                        {
                                             error!(%we, "failed to send not-initialized error to client");
                                             break;
                                         }
@@ -258,9 +265,13 @@ impl Gate {
 
                                 // ── 2. Throttle: Rate limit check ──
                                 if gate_config.enable_rate_limit {
-                                    let rl_tool = if method == "tools/call" { Some(tool_name) } else { None };
-                                    if let Err(e) = gate_rate_limiter
-                                        .check_rate_limit(&principal, rl_tool)
+                                    let rl_tool = if method == "tools/call" {
+                                        Some(tool_name)
+                                    } else {
+                                        None
+                                    };
+                                    if let Err(e) =
+                                        gate_rate_limiter.check_rate_limit(&principal, rl_tool)
                                     {
                                         warn!(%e, principal = %principal, method = %method, "rate limited");
                                         record_audit(
@@ -282,7 +293,9 @@ impl Gate {
                                             -32000,
                                             "Rate limit exceeded",
                                         );
-                                        if let Err(we) = write_to_client(&gate_client_writer, &err_resp).await {
+                                        if let Err(we) =
+                                            write_to_client(&gate_client_writer, &err_resp).await
+                                        {
                                             error!(%we, "failed to send rate limit error to client");
                                             break;
                                         }
@@ -313,7 +326,9 @@ impl Gate {
                                             -32000,
                                             "Budget exhausted",
                                         );
-                                        if let Err(we) = write_to_client(&gate_client_writer, &err_resp).await {
+                                        if let Err(we) =
+                                            write_to_client(&gate_client_writer, &err_resp).await
+                                        {
                                             error!(%we, "failed to send budget error to client");
                                             break;
                                         }
@@ -370,7 +385,10 @@ impl Gate {
                                                 -32003,
                                                 "Request blocked: injection pattern detected",
                                             );
-                                            if let Err(we) = write_to_client(&gate_client_writer, &err_resp).await {
+                                            if let Err(we) =
+                                                write_to_client(&gate_client_writer, &err_resp)
+                                                    .await
+                                            {
                                                 error!(%we, "failed to send injection error to client");
                                                 break;
                                             }
@@ -428,7 +446,10 @@ impl Gate {
                                                 -32003,
                                                 format!("Denied by policy: {}", decision.rule_id),
                                             );
-                                            if let Err(we) = write_to_client(&gate_client_writer, &err_resp).await {
+                                            if let Err(we) =
+                                                write_to_client(&gate_client_writer, &err_resp)
+                                                    .await
+                                            {
                                                 error!(%we, "failed to send policy error to client");
                                                 break;
                                             }
@@ -466,7 +487,9 @@ impl Gate {
                                     -32700,
                                     "Parse error: invalid JSON",
                                 );
-                                if let Err(we) = write_to_client(&gate_client_writer, &err_resp).await {
+                                if let Err(we) =
+                                    write_to_client(&gate_client_writer, &err_resp).await
+                                {
                                     error!(%we, "failed to send parse error to client");
                                     break;
                                 }
@@ -531,7 +554,10 @@ impl Gate {
                                                     severity = ?drift.severity,
                                                     "schema drift detected"
                                                 );
-                                                if matches!(drift.severity, DriftSeverity::Critical | DriftSeverity::High) {
+                                                if matches!(
+                                                    drift.severity,
+                                                    DriftSeverity::Critical | DriftSeverity::High
+                                                ) {
                                                     has_critical_or_high = true;
                                                 }
                                             }
@@ -540,7 +566,9 @@ impl Gate {
                                             // Send the previously pinned (known-good)
                                             // schema instead of the drifted response.
                                             if has_critical_or_high {
-                                                warn!("critical/high schema drift detected -- blocking drifted tools/list");
+                                                warn!(
+                                                    "critical/high schema drift detected -- blocking drifted tools/list"
+                                                );
                                                 // Fix 9: Record outbound drift block.
                                                 record_audit(
                                                     &outbound_ledger,
@@ -555,18 +583,28 @@ impl Gate {
                                                 )
                                                 .await;
 
-                                                if let Some(ref good_result) = last_good_tools_result {
+                                                if let Some(ref good_result) =
+                                                    last_good_tools_result
+                                                {
                                                     // Replace with the known-good schema.
                                                     forward_msg.result = Some(good_result.clone());
                                                 } else {
                                                     // No known-good schema available; send error.
-                                                    let err_id = forward_msg.id.clone().unwrap_or(Value::Null);
+                                                    let err_id = forward_msg
+                                                        .id
+                                                        .clone()
+                                                        .unwrap_or(Value::Null);
                                                     let err_resp = McpMessage::error_response(
                                                         err_id,
                                                         -32003,
                                                         "Schema drift detected: tool definitions have been tampered with",
                                                     );
-                                                    if let Err(we) = write_to_client(&outbound_client_writer, &err_resp).await {
+                                                    if let Err(we) = write_to_client(
+                                                        &outbound_client_writer,
+                                                        &err_resp,
+                                                    )
+                                                    .await
+                                                    {
                                                         error!(%we, "failed to send schema drift error to client");
                                                         break;
                                                     }
@@ -610,7 +648,10 @@ impl Gate {
                                             Direction::Outbound,
                                             &method,
                                             None,
-                                            &format!("warn:outbound_injection:{}", pattern_names.join(",")),
+                                            &format!(
+                                                "warn:outbound_injection:{}",
+                                                pattern_names.join(",")
+                                            ),
                                             None,
                                             start.elapsed().as_micros() as u64,
                                         )
@@ -636,7 +677,8 @@ impl Gate {
                         .await;
 
                         // Forward to client
-                        if let Err(e) = write_to_client(&outbound_client_writer, &forward_msg).await {
+                        if let Err(e) = write_to_client(&outbound_client_writer, &forward_msg).await
+                        {
                             error!(%e, "failed to write to client");
                             break;
                         }

@@ -177,12 +177,10 @@ fn run_validate(path: &PathBuf) -> Result<ValidateSummary, String> {
 /// Core validation logic operating on the TOML string (testable without filesystem).
 fn validate_policy_content(content: &str) -> Result<ValidateSummary, String> {
     // Step 1: Parse TOML syntax and rule structure.
-    let rules =
-        parse_policy(content).map_err(|e| format!("policy validation failed: {e}"))?;
+    let rules = parse_policy(content).map_err(|e| format!("policy validation failed: {e}"))?;
 
     // Step 2: Build the policy engine (compiles regexes, validates globs).
-    PolicyEngine::new(rules.clone())
-        .map_err(|e| format!("policy build failed: {e}"))?;
+    PolicyEngine::new(rules.clone()).map_err(|e| format!("policy build failed: {e}"))?;
 
     // Step 3: Collect summary statistics.
     let mut identities = HashSet::new();
@@ -329,8 +327,8 @@ fn hash_schema_content(content: &str) -> Result<Vec<ToolHash>, String> {
         // Combined pin hash: SHA-256(name || description_hash || schema_hash).
         let mut hasher = Sha256::new();
         hasher.update(name.as_bytes());
-        hasher.update(&description_hash);
-        hasher.update(&schema_hash);
+        hasher.update(description_hash);
+        hasher.update(schema_hash);
         let combined = hasher.finalize();
 
         results.push(ToolHash {
@@ -409,9 +407,7 @@ async fn main() -> anyhow::Result<()> {
 
             // Merge config file settings with CLI flags. CLI flags act as
             // overrides when they are explicitly set to true.
-            let section = loaded_config
-                .as_ref()
-                .and_then(|c| c.mcpdome.as_ref());
+            let section = loaded_config.as_ref().and_then(|c| c.mcpdome.as_ref());
 
             let effective_log_level = section
                 .and_then(|s| s.log_level.clone())
@@ -419,19 +415,17 @@ async fn main() -> anyhow::Result<()> {
 
             let allow_anonymous = section
                 .and_then(|s| s.auth.as_ref())
-                .map_or(true, |a| a.allow_anonymous);
+                .is_none_or(|a| a.allow_anonymous);
 
             let ward_cfg = section.and_then(|s| s.ward.as_ref());
 
-            let has_rules = loaded_config
-                .as_ref()
-                .map_or(false, |c| !c.rules.is_empty());
+            let has_rules = loaded_config.as_ref().is_some_and(|c| !c.rules.is_empty());
 
             let gate_config = GateConfig {
                 enforce_policy: enforce_policy || has_rules,
-                enable_ward: enable_ward || ward_cfg.map_or(false, |w| w.enable_injection_scan),
+                enable_ward: enable_ward || ward_cfg.is_some_and(|w| w.enable_injection_scan),
                 enable_schema_pin: enable_schema_pin
-                    || ward_cfg.map_or(false, |w| w.enable_schema_pin),
+                    || ward_cfg.is_some_and(|w| w.enable_schema_pin),
                 enable_rate_limit: enable_rate_limit
                     || section.and_then(|s| s.rate_limit.as_ref()).is_some(),
                 enable_budget: false,
@@ -454,19 +448,19 @@ async fn main() -> anyhow::Result<()> {
 
             // Build authenticators from config PSK entries + anonymous fallback.
             let mut authenticators: Vec<Box<dyn dome_sentinel::Authenticator>> = Vec::new();
-            if let Some(ref cfg) = loaded_config {
-                if !cfg.psk.is_empty() {
-                    let entries: Vec<PskEntry> = cfg
-                        .psk
-                        .iter()
-                        .map(|p| PskEntry {
-                            key_id: p.key_id.clone(),
-                            secret: p.secret.clone(),
-                            labels: p.labels.iter().cloned().collect(),
-                        })
-                        .collect();
-                    authenticators.push(Box::new(PskAuthenticator::new(entries)));
-                }
+            if let Some(ref cfg) = loaded_config
+                && !cfg.psk.is_empty()
+            {
+                let entries: Vec<PskEntry> = cfg
+                    .psk
+                    .iter()
+                    .map(|p| PskEntry {
+                        key_id: p.key_id.clone(),
+                        secret: p.secret.clone(),
+                        labels: p.labels.iter().cloned().collect(),
+                    })
+                    .collect();
+                authenticators.push(Box::new(PskAuthenticator::new(entries)));
             }
             authenticators.push(Box::new(AnonymousAuthenticator));
 
@@ -890,7 +884,10 @@ version = "1"
         let pin = store.get_pin("test_tool").unwrap();
 
         let hashes = hash_schema_content(json_str).unwrap();
-        assert_eq!(hashes[0].description_hash, hex_encode(&pin.description_hash));
+        assert_eq!(
+            hashes[0].description_hash,
+            hex_encode(&pin.description_hash)
+        );
         assert_eq!(hashes[0].schema_hash, hex_encode(&pin.schema_hash));
     }
 

@@ -564,7 +564,10 @@ mod tests {
 
         let hash_a = hash_field(Some(&a));
         let hash_b = hash_field(Some(&b));
-        assert_eq!(hash_a, hash_b, "canonical hashing should produce identical hashes for same-content objects");
+        assert_eq!(
+            hash_a, hash_b,
+            "canonical hashing should produce identical hashes for same-content objects"
+        );
     }
 
     #[test]
@@ -607,6 +610,10 @@ mod tests {
             }]
         });
         let drifts = store.verify_tools(&tools_v2);
-        assert!(drifts.is_empty(), "reordered keys should not cause drift, got: {:?}", drifts);
+        assert!(
+            drifts.is_empty(),
+            "reordered keys should not cause drift, got: {:?}",
+            drifts
+        );
     }
 }

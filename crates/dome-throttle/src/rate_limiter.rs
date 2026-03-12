@@ -202,9 +202,8 @@ impl RateLimiter {
         let now = Instant::now();
         let ttl = std::time::Duration::from_secs(self.config.entry_ttl_secs);
 
-        self.buckets.retain(|_key, entry| {
-            now.duration_since(entry.last_used) < ttl
-        });
+        self.buckets
+            .retain(|_key, entry| now.duration_since(entry.last_used) < ttl);
     }
 
     /// Explicitly run cleanup, removing entries older than TTL.
@@ -213,9 +212,8 @@ impl RateLimiter {
         let now = Instant::now();
         let ttl = std::time::Duration::from_secs(self.config.entry_ttl_secs);
 
-        self.buckets.retain(|_key, entry| {
-            now.duration_since(entry.last_used) < ttl
-        });
+        self.buckets
+            .retain(|_key, entry| now.duration_since(entry.last_used) < ttl);
     }
 
     /// Number of active buckets (for diagnostics).
@@ -389,11 +387,7 @@ mod tests {
 
         // Should pass many requests without global limit
         for i in 0..50 {
-            assert!(
-                limiter
-                    .check_rate_limit(&format!("user-{i}"), None)
-                    .is_ok()
-            );
+            assert!(limiter.check_rate_limit(&format!("user-{i}"), None).is_ok());
         }
     }
 

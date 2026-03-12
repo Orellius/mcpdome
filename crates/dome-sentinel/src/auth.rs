@@ -1,12 +1,12 @@
 use std::collections::{HashMap, HashSet};
 
 use argon2::{
-    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Algorithm, Argon2, Params, Version,
+    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
 };
-use password_hash::rand_core::OsRng;
 use async_trait::async_trait;
 use dome_core::McpMessage;
+use password_hash::rand_core::OsRng;
 use serde_json::Value;
 use tracing::{debug, warn};
 

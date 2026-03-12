@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
-use notify::{RecommendedWatcher, RecursiveMode, Watcher, Event, EventKind};
+use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
@@ -95,16 +95,13 @@ impl PolicyWatcher {
         // --- File system watcher ---
         let fs_tx = reload_tx.clone();
         let watch_path = policy_path.clone();
-        let mut fs_watcher = notify::recommended_watcher(
-            move |res: Result<Event, notify::Error>| {
+        let mut fs_watcher =
+            notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
                 match res {
                     Ok(event) => {
                         // Only react to writes / creates (covers editors that
                         // rename-and-replace).
-                        if matches!(
-                            event.kind,
-                            EventKind::Modify(_) | EventKind::Create(_)
-                        ) {
+                        if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
                             let _ = fs_tx.try_send(ReloadTrigger::FileChanged);
                         }
                     }
@@ -112,8 +109,7 @@ impl PolicyWatcher {
                         warn!(%e, "file watcher error");
                     }
                 }
-            },
-        )?;
+            })?;
 
         // Watch the parent directory so we catch rename-and-replace patterns
         // used by editors (vim, emacs, etc.). If the file has no parent, watch

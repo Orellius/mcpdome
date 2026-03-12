@@ -15,17 +15,17 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::extract::{Query, State};
-use axum::http::{header, HeaderValue, Method, StatusCode};
-use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::response::IntoResponse;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use dome_core::{DomeError, McpMessage};
 use futures::Stream;
 use serde::Deserialize;
-use tokio::sync::{broadcast, mpsc, Mutex, Notify};
-use tokio_stream::wrappers::BroadcastStream;
+use tokio::sync::{Mutex, Notify, broadcast, mpsc};
 use tokio_stream::StreamExt;
+use tokio_stream::wrappers::BroadcastStream;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -123,9 +123,7 @@ impl HttpTransport {
             .await
             .map_err(|e| DomeError::Transport(e))?;
 
-        let local_addr = listener
-            .local_addr()
-            .map_err(|e| DomeError::Transport(e))?;
+        let local_addr = listener.local_addr().map_err(|e| DomeError::Transport(e))?;
 
         info!(%local_addr, "HTTP+SSE transport listening");
 
@@ -236,13 +234,7 @@ impl HttpWriter {
 
     /// Return the IDs of all currently connected sessions.
     pub async fn active_sessions(&self) -> Vec<String> {
-        self.state
-            .sessions
-            .lock()
-            .await
-            .keys()
-            .cloned()
-            .collect()
+        self.state.sessions.lock().await.keys().cloned().collect()
     }
 }
 
@@ -267,12 +259,11 @@ async fn handle_sse(
     let session_id = Uuid::new_v4().to_string();
     let (sse_tx, sse_rx) = broadcast::channel::<String>(256);
 
-    state.sessions.lock().await.insert(
-        session_id.clone(),
-        Session {
-            sse_tx,
-        },
-    );
+    state
+        .sessions
+        .lock()
+        .await
+        .insert(session_id.clone(), Session { sse_tx });
 
     info!(session_id = %session_id, "SSE client connected");
 
@@ -355,10 +346,7 @@ fn build_cors_layer(allowed_origins: &Option<Vec<String>>) -> CorsLayer {
 
     match allowed_origins {
         Some(origins) if !origins.is_empty() => {
-            let parsed: Vec<HeaderValue> = origins
-                .iter()
-                .filter_map(|o| o.parse().ok())
-                .collect();
+            let parsed: Vec<HeaderValue> = origins.iter().filter_map(|o| o.parse().ok()).collect();
             cors.allow_origin(AllowOrigin::list(parsed))
         }
         _ => cors.allow_origin(AllowOrigin::any()),
@@ -410,7 +398,7 @@ impl Stream for CleanupStream {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     /// Helper: start a transport on an ephemeral port.
     async fn start_test_transport() -> (HttpReader, HttpWriter, HttpTransportHandle) {
@@ -451,7 +439,9 @@ mod tests {
                     let trimmed = line.trim();
                     if let Some(data) = trimmed.strip_prefix("data: ") {
                         if !session_sent {
-                            let _ = session_tx.send(data.replace("/message?sessionId=", "")).await;
+                            let _ = session_tx
+                                .send(data.replace("/message?sessionId=", ""))
+                                .await;
                             session_sent = true;
                         } else {
                             let _ = data_tx.send(data.to_string()).await;
@@ -555,7 +545,10 @@ mod tests {
         let client = reqwest::Client::new();
 
         let resp = client
-            .request(reqwest::Method::OPTIONS, format!("http://{addr}/message?sessionId=test"))
+            .request(
+                reqwest::Method::OPTIONS,
+                format!("http://{addr}/message?sessionId=test"),
+            )
             .header("Origin", "https://example.com")
             .header("Access-Control-Request-Method", "POST")
             .header("Access-Control-Request-Headers", "content-type")

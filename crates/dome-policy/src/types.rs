@@ -168,12 +168,12 @@ impl<'de> Deserialize<'de> for Condition {
         let raw = ConditionRaw::deserialize(deserializer)?;
         match raw.kind.as_str() {
             "time_window" => {
-                let after_str = raw.after.ok_or_else(|| {
-                    serde::de::Error::missing_field("after")
-                })?;
-                let before_str = raw.before.ok_or_else(|| {
-                    serde::de::Error::missing_field("before")
-                })?;
+                let after_str = raw
+                    .after
+                    .ok_or_else(|| serde::de::Error::missing_field("after"))?;
+                let before_str = raw
+                    .before
+                    .ok_or_else(|| serde::de::Error::missing_field("before"))?;
                 let after = NaiveTime::parse_from_str(&after_str, "%H:%M")
                     .map_err(serde::de::Error::custom)?;
                 let before = NaiveTime::parse_from_str(&before_str, "%H:%M")
@@ -185,14 +185,16 @@ impl<'de> Deserialize<'de> for Condition {
                 })
             }
             "day_of_week" => {
-                let day_strings = raw.days.ok_or_else(|| {
-                    serde::de::Error::missing_field("days")
-                })?;
+                let day_strings = raw
+                    .days
+                    .ok_or_else(|| serde::de::Error::missing_field("days"))?;
                 let days = day_strings
                     .iter()
-                    .map(|s| parse_weekday(s).ok_or_else(|| {
-                        serde::de::Error::custom(format!("invalid weekday: '{s}'"))
-                    }))
+                    .map(|s| {
+                        parse_weekday(s).ok_or_else(|| {
+                            serde::de::Error::custom(format!("invalid weekday: '{s}'"))
+                        })
+                    })
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(Condition::DayOfWeek { days })
             }
@@ -210,7 +212,11 @@ impl Serialize for Condition {
     {
         use serde::ser::SerializeMap;
         match self {
-            Condition::TimeWindow { after, before, timezone } => {
+            Condition::TimeWindow {
+                after,
+                before,
+                timezone,
+            } => {
                 let mut map = serializer.serialize_map(None)?;
                 map.serialize_entry("type", "time_window")?;
                 map.serialize_entry("after", &after.format("%H:%M").to_string())?;

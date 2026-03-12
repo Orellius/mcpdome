@@ -183,9 +183,8 @@ impl BudgetTracker {
     /// Explicitly run cleanup, removing entries whose windows have expired.
     pub fn cleanup(&self) {
         let now = Instant::now();
-        self.budgets.retain(|_key, budget| {
-            now.duration_since(budget.window_start) < budget.window
-        });
+        self.budgets
+            .retain(|_key, budget| now.duration_since(budget.window_start) < budget.window);
     }
 
     /// Register a custom budget for an identity (overrides defaults).
