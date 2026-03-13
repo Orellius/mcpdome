@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/mcpdome-logo.png" alt="MCPDome" width="320" />
+  <img src="https://raw.githubusercontent.com/orellius/mcpdome/main/assets/mcpdome-logo.png" alt="MCPDome" width="320" />
 </p>
 
 <h1 align="center">MCPDome</h1>
@@ -58,8 +58,9 @@ AI agents are getting access to powerful tools — file systems, databases, APIs
 - **Schema pinning** — Canonical SHA-256 hashes of tool definitions detect and **block** rug pulls and tool shadowing
 - **Hash-chained audit logs** — Tamper-evident NDJSON logging with SHA-256 chain linking, full inbound + outbound coverage
 - **Token-bucket rate limiting** — Global, per-identity, and per-tool limits with LRU eviction and TTL-based cleanup
-- **Multiple auth methods** — Argon2id-hashed PSKs, API key authentication, OAuth2 scaffolding, with automatic credential stripping
-- **HTTP+SSE transport** — Feature-gated HTTP transport with Server-Sent Events, session management, and CORS support (in addition to stdio)
+- **Multiple auth methods** — Argon2id-hashed PSKs, API key authentication, OAuth2 scaffolding, with timing-safe verification and automatic credential stripping
+- **HTTP+SSE transport** — Feature-gated HTTP transport with Server-Sent Events, session management, restricted CORS, and 256KB body limits (in addition to stdio)
+- **Bounded I/O** — 10MB max message size, 5-minute read timeouts, 30-second write timeouts to prevent resource exhaustion
 - **Full method coverage** — All MCP methods are guarded (not just `tools/call`), with proper JSON-RPC error responses on deny
 - **Outbound scanning** — Server responses are scanned for injection patterns before reaching the AI agent
 - **CLI toolbox** — `validate`, `verify-log`, `hash-schema`, `keygen` subcommands plus unified `--config` file support
@@ -214,16 +215,15 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full deep dive.
 
 ## Test Suite
 
-204 tests covering every security component:
+199 tests covering every security component:
 
 ```
 dome-core        5 tests   (message parsing, error mapping)
-dome-sentinel   30 tests   (PSK auth, API keys, Argon2id, OAuth2 stub, chain resolution)
-dome-policy     39 tests   (rules, priority, recursive args, time-windows, hot-reload)
-dome-throttle   22 tests   (token bucket, rate limits, budgets, LRU eviction, global limits)
+dome-sentinel   30 tests   (PSK auth, API keys, Argon2id, timing-safe verification, chain resolution)
+dome-policy     39 tests   (rules, priority, recursive args, time-windows, hot-reload, concurrent reads)
+dome-throttle   22 tests   (token bucket, rate limits, budgets, LRU eviction, global limits, TOCTOU safety)
 dome-ward       56 tests   (injection patterns, Unicode normalization, recursive scanning, schema pins, heuristics)
-dome-ledger     21 tests   (hash chain, tamper detection, file rotation)
-dome-transport   5 tests   (HTTP+SSE connection, roundtrip, CORS, cleanup)
+dome-ledger     21 tests   (hash chain, tamper detection, file rotation, chain integrity validation)
 mcpdome binary  19 tests   (CLI subcommands: validate, verify-log, hash-schema, keygen)
 integration      7 tests   (full binary proxy end-to-end)
 ```

@@ -13,7 +13,7 @@ Shared types, traits, and error taxonomy for the MCPDome security gateway.
 
 ```toml
 [dependencies]
-dome-core = "0.1"
+dome-core = "0.3"
 ```
 
 ```rust

@@ -1,6 +1,6 @@
 # dome-policy
 
-TOML-based policy engine for MCPDome with default-deny authorization.
+TOML-based policy engine for MCPDome with default-deny authorization and hot-reload support.
 
 ## What it does
 
@@ -8,14 +8,16 @@ TOML-based policy engine for MCPDome with default-deny authorization.
 - Evaluates requests against rules in priority order (lowest number = highest priority), with first-match-wins semantics.
 - Enforces default-deny: if no rule matches a request, it is denied.
 - Supports identity matching by principal name or label (e.g., `role:admin`), and tool matching by exact name or glob pattern.
+- **Time-window conditions** — rules can be scoped to specific time ranges and days of the week (e.g., business hours only).
 - **Recursive argument inspection** — deny_regex and allow_glob constraints descend into nested JSON objects and arrays, preventing bypass via nested payloads.
+- **Hot-reload** — `PolicyWatcher` monitors TOML files for changes and atomically swaps the engine via `Arc`, with file-system watcher and SIGHUP support.
 - Returns structured `Decision` values with the matching rule ID, effect, and metadata for audit logging.
 
 ## Usage
 
 ```toml
 [dependencies]
-dome-policy = "0.1"
+dome-policy = "0.3"
 ```
 
 ```rust
