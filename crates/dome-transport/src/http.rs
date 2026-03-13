@@ -122,9 +122,9 @@ impl HttpTransport {
 
         let listener = tokio::net::TcpListener::bind(config.bind_addr)
             .await
-            .map_err(|e| DomeError::Transport(e))?;
+            .map_err(DomeError::Transport)?;
 
-        let local_addr = listener.local_addr().map_err(|e| DomeError::Transport(e))?;
+        let local_addr = listener.local_addr().map_err(DomeError::Transport)?;
 
         info!(%local_addr, "HTTP+SSE transport listening");
 

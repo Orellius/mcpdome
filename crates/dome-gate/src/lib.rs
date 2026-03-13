@@ -25,6 +25,45 @@ const MAX_LINE_SIZE: usize = 10 * 1024 * 1024; // 10 MB
 const CLIENT_READ_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes
 use uuid::Uuid;
 
+// ---------------------------------------------------------------------------
+// Interceptor chain action types
+// ---------------------------------------------------------------------------
+
+/// Result of processing an inbound message through the interceptor chain.
+enum InboundAction {
+    /// Forward the (possibly modified) message to the upstream server.
+    Forward(McpMessage),
+    /// Send this error response back to the client (do NOT forward).
+    Deny(McpMessage),
+}
+
+/// Result of processing an outbound message through the interceptor chain.
+enum OutboundAction {
+    /// Forward the (possibly modified) message to the client.
+    Forward(McpMessage),
+    /// Block the message; send this error response to the client instead.
+    Block(McpMessage),
+}
+
+/// Per-session state for the outbound interceptor chain.
+struct OutboundContext {
+    first_tools_list: bool,
+    last_good_tools_result: Option<Value>,
+}
+
+impl OutboundContext {
+    fn new() -> Self {
+        Self {
+            first_tools_list: true,
+            last_good_tools_result: None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Gate configuration
+// ---------------------------------------------------------------------------
+
 /// Configuration for the Gate proxy.
 #[derive(Debug, Clone)]
 pub struct GateConfig {
@@ -59,6 +98,10 @@ impl Default for GateConfig {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Gate — public API
+// ---------------------------------------------------------------------------
+
 /// The Gate -- MCPDome's core proxy loop with full interceptor chain.
 ///
 /// Interceptor order (inbound, client -> server):
@@ -81,6 +124,15 @@ pub struct Gate {
     injection_scanner: Arc<InjectionScanner>,
     schema_store: Arc<Mutex<SchemaPinStore>>,
     ledger: Arc<Mutex<Ledger>>,
+}
+
+impl std::fmt::Debug for Gate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Gate")
+            .field("config", &self.config)
+            .field("has_policy_engine", &self.policy_engine.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Gate {
@@ -127,8 +179,25 @@ impl Gate {
         )
     }
 
-    /// Run the proxy.
+    /// Convert the Gate into a shared ProxyState for the proxy loop.
+    fn into_proxy_state(self) -> Arc<ProxyState> {
+        Arc::new(ProxyState {
+            identity: Mutex::new(None),
+            resolver: self.resolver,
+            config: self.config,
+            policy: self.policy_engine,
+            rate_limiter: self.rate_limiter,
+            budget: self.budget_tracker,
+            scanner: self.injection_scanner,
+            schema_store: self.schema_store,
+            ledger: self.ledger,
+        })
+    }
+
+    /// Run the proxy over stdio (stdin/stdout for the client, child process for the server).
     pub async fn run_stdio(self, command: &str, args: &[&str]) -> Result<(), DomeError> {
+        let state = self.into_proxy_state();
+
         let transport = StdioTransport::spawn(command, args).await?;
         let (mut server_reader, mut server_writer, mut child) = transport.split();
 
@@ -139,21 +208,11 @@ impl Gate {
 
         info!("MCPDome proxy active -- interceptor chain armed");
 
-        // Shared state for the two tasks
-        let identity: Arc<Mutex<Option<dome_sentinel::Identity>>> = Arc::new(Mutex::new(None));
-
-        let gate_identity = Arc::clone(&identity);
-        let gate_resolver = self.resolver;
-        let gate_policy = self.policy_engine.clone();
-        let gate_rate_limiter = Arc::clone(&self.rate_limiter);
-        let gate_budget = Arc::clone(&self.budget_tracker);
-        let gate_scanner = Arc::clone(&self.injection_scanner);
-        let gate_ledger = Arc::clone(&self.ledger);
-        let gate_config = self.config.clone();
-        let gate_client_writer = Arc::clone(&client_writer);
+        let inbound_state = Arc::clone(&state);
+        let inbound_writer = Arc::clone(&client_writer);
 
         // Client -> Server task (inbound interceptor chain)
-        let client_to_server = tokio::spawn(async move {
+        let mut client_to_server = tokio::spawn(async move {
             let mut line = String::new();
             loop {
                 line.clear();
@@ -183,7 +242,7 @@ impl Gate {
                                 -32600,
                                 "Message too large",
                             );
-                            if let Err(we) = write_to_client(&gate_client_writer, &err_resp).await {
+                            if let Err(we) = write_to_client(&inbound_writer, &err_resp).await {
                                 error!(%we, "failed to send size error to client");
                                 break;
                             }
@@ -195,338 +254,30 @@ impl Gate {
                         }
 
                         match McpMessage::parse(trimmed) {
-                            Ok(msg) => {
-                                let start = std::time::Instant::now();
-                                let method = msg.method.as_deref().unwrap_or("-").to_string();
-                                let tool = msg.tool_name().map(String::from);
-                                let request_id = Uuid::new_v4();
-
-                                debug!(
-                                    method = method.as_str(),
-                                    id = ?msg.id,
-                                    tool = tool.as_deref().unwrap_or("-"),
-                                    "client -> server"
-                                );
-
-                                // ── 1. Sentinel: Authenticate on initialize ──
-                                let mut msg = msg;
-                                if method == "initialize" {
-                                    match gate_resolver.resolve(&msg).await {
-                                        Ok(id) => {
-                                            info!(
-                                                principal = %id.principal,
-                                                method = %id.auth_method,
-                                                "identity resolved"
-                                            );
-                                            *gate_identity.lock().await = Some(id);
-
-                                            // Strip all credential fields before forwarding
-                                            // so the downstream server never sees them.
-                                            msg = PskAuthenticator::strip_psk(&msg);
-                                            msg = ApiKeyAuthenticator::strip_api_key(&msg);
-                                        }
-                                        Err(e) => {
-                                            // Fix 1: On auth failure during initialize,
-                                            // send error response and do NOT forward.
-                                            warn!(%e, "authentication failed");
-                                            let err_id = msg.id.clone().unwrap_or(Value::Null);
-                                            let err_resp = McpMessage::error_response(
-                                                err_id,
-                                                -32600,
-                                                "Authentication failed",
-                                            );
-                                            if let Err(we) =
-                                                write_to_client(&gate_client_writer, &err_resp)
-                                                    .await
-                                            {
-                                                error!(%we, "failed to send auth error to client");
-                                                break;
-                                            }
-                                            continue;
-                                        }
+                            Ok(msg) => match inbound_state.process_inbound(msg).await {
+                                InboundAction::Forward(msg) => {
+                                    if let Err(e) = server_writer.send(&msg).await {
+                                        error!(%e, "failed to forward to server");
+                                        break;
                                     }
                                 }
-
-                                // Fix 1: Block all non-initialize requests before
-                                // the session has been initialized (identity resolved).
-                                if method != "initialize" {
-                                    let identity_lock = gate_identity.lock().await;
-                                    if identity_lock.is_none() {
-                                        drop(identity_lock);
-                                        warn!(method = %method, "request before initialize");
-                                        let err_id = msg.id.clone().unwrap_or(Value::Null);
-                                        let err_resp = McpMessage::error_response(
-                                            err_id,
-                                            -32600,
-                                            "Session not initialized",
-                                        );
-                                        if let Err(we) =
-                                            write_to_client(&gate_client_writer, &err_resp).await
-                                        {
-                                            error!(%we, "failed to send not-initialized error to client");
-                                            break;
-                                        }
-                                        continue;
-                                    }
-                                    drop(identity_lock);
-                                }
-
-                                let identity_lock = gate_identity.lock().await;
-                                let principal = identity_lock
-                                    .as_ref()
-                                    .map(|i| i.principal.clone())
-                                    .unwrap_or_else(|| "anonymous".to_string());
-                                let labels = identity_lock
-                                    .as_ref()
-                                    .map(|i| i.labels.clone())
-                                    .unwrap_or_default();
-                                drop(identity_lock);
-
-                                // Fix 2: Apply interceptor chain to ALL methods,
-                                // not just tools/call.
-
-                                // Extract the method-specific resource name for
-                                // policy evaluation. For tools/call this is the
-                                // tool name, for resources/read the URI, for
-                                // prompts/get the prompt name, etc.
-                                let resource_name =
-                                    msg.method_resource_name().unwrap_or("-").to_string();
-                                let tool_name = resource_name.as_str();
-
-                                let args = msg
-                                    .params
-                                    .as_ref()
-                                    .and_then(|p| p.get("arguments"))
-                                    .cloned()
-                                    .unwrap_or(Value::Null);
-
-                                // ── 2. Throttle: Rate limit check ──
-                                if gate_config.enable_rate_limit {
-                                    let rl_tool = if tool_name != "-" {
-                                        Some(tool_name)
-                                    } else {
-                                        None
-                                    };
-                                    if let Err(e) =
-                                        gate_rate_limiter.check_rate_limit(&principal, rl_tool)
+                                InboundAction::Deny(err_resp) => {
+                                    if let Err(we) =
+                                        write_to_client(&inbound_writer, &err_resp).await
                                     {
-                                        warn!(%e, principal = %principal, method = %method, "rate limited");
-                                        record_audit(
-                                            &gate_ledger,
-                                            request_id,
-                                            &principal,
-                                            Direction::Inbound,
-                                            &method,
-                                            tool.as_deref(),
-                                            "deny:rate_limit",
-                                            None,
-                                            start.elapsed().as_micros() as u64,
-                                        )
-                                        .await;
-                                        // Fix 3: Send JSON-RPC error on rate limit deny.
-                                        let err_id = msg.id.clone().unwrap_or(Value::Null);
-                                        let err_resp = McpMessage::error_response(
-                                            err_id,
-                                            -32000,
-                                            "Rate limit exceeded",
-                                        );
-                                        if let Err(we) =
-                                            write_to_client(&gate_client_writer, &err_resp).await
-                                        {
-                                            error!(%we, "failed to send rate limit error to client");
-                                            break;
-                                        }
-                                        continue;
+                                        error!(%we, "failed to send error to client");
+                                        break;
                                     }
                                 }
-
-                                // ── 2b. Throttle: Budget check ──
-                                if gate_config.enable_budget {
-                                    if let Err(e) = gate_budget.try_spend(&principal, 1.0) {
-                                        warn!(%e, principal = %principal, "budget exhausted");
-                                        record_audit(
-                                            &gate_ledger,
-                                            request_id,
-                                            &principal,
-                                            Direction::Inbound,
-                                            &method,
-                                            tool.as_deref(),
-                                            "deny:budget",
-                                            None,
-                                            start.elapsed().as_micros() as u64,
-                                        )
-                                        .await;
-                                        // Fix 3: Send JSON-RPC error on budget deny.
-                                        let err_id = msg.id.clone().unwrap_or(Value::Null);
-                                        let err_resp = McpMessage::error_response(
-                                            err_id,
-                                            -32000,
-                                            "Budget exhausted",
-                                        );
-                                        if let Err(we) =
-                                            write_to_client(&gate_client_writer, &err_resp).await
-                                        {
-                                            error!(%we, "failed to send budget error to client");
-                                            break;
-                                        }
-                                        continue;
-                                    }
-                                }
-
-                                // ── 3. Ward: Injection scanning ──
-                                // Fix 8: Ward runs BEFORE policy so injection detection
-                                // is applied regardless of authorization level.
-                                if gate_config.enable_ward {
-                                    // Scan params/arguments if present.
-                                    let scan_text = if method == "tools/call" {
-                                        serde_json::to_string(&args).unwrap_or_default()
-                                    } else if let Some(ref params) = msg.params {
-                                        serde_json::to_string(params).unwrap_or_default()
-                                    } else {
-                                        String::new()
-                                    };
-
-                                    if !scan_text.is_empty() {
-                                        let matches = gate_scanner.scan_text(&scan_text);
-                                        if !matches.is_empty() {
-                                            let pattern_names: Vec<&str> = matches
-                                                .iter()
-                                                .map(|m| m.pattern_name.as_str())
-                                                .collect();
-                                            warn!(
-                                                patterns = ?pattern_names,
-                                                method = %method,
-                                                tool = tool_name,
-                                                principal = %principal,
-                                                "injection detected"
-                                            );
-                                            record_audit(
-                                                &gate_ledger,
-                                                request_id,
-                                                &principal,
-                                                Direction::Inbound,
-                                                &method,
-                                                tool.as_deref(),
-                                                &format!(
-                                                    "deny:injection:{}",
-                                                    pattern_names.join(",")
-                                                ),
-                                                None,
-                                                start.elapsed().as_micros() as u64,
-                                            )
-                                            .await;
-                                            // Fix 3: Send JSON-RPC error on injection deny.
-                                            let err_id = msg.id.clone().unwrap_or(Value::Null);
-                                            let err_resp = McpMessage::error_response(
-                                                err_id,
-                                                -32003,
-                                                "Request blocked: injection pattern detected",
-                                            );
-                                            if let Err(we) =
-                                                write_to_client(&gate_client_writer, &err_resp)
-                                                    .await
-                                            {
-                                                error!(%we, "failed to send injection error to client");
-                                                break;
-                                            }
-                                            continue;
-                                        }
-                                    }
-                                }
-
-                                // ── 4. Policy: Authorization ──
-                                if gate_config.enforce_policy {
-                                    if let Some(ref shared_engine) = gate_policy {
-                                        // Load the current policy atomically. This is
-                                        // lock-free and picks up hot-reloaded changes
-                                        // immediately.
-                                        let engine = shared_engine.load();
-
-                                        // For tools/call, evaluate with the tool name;
-                                        // for other methods, evaluate with the method itself.
-                                        let policy_resource = if method == "tools/call" {
-                                            tool_name
-                                        } else {
-                                            method.as_str()
-                                        };
-                                        let policy_id = PolicyIdentity::new(
-                                            principal.clone(),
-                                            labels.iter().cloned(),
-                                        );
-                                        let decision =
-                                            engine.evaluate(&policy_id, policy_resource, &args);
-
-                                        if !decision.is_allowed() {
-                                            warn!(
-                                                rule_id = %decision.rule_id,
-                                                method = %method,
-                                                resource = policy_resource,
-                                                principal = %principal,
-                                                "policy denied"
-                                            );
-                                            record_audit(
-                                                &gate_ledger,
-                                                request_id,
-                                                &principal,
-                                                Direction::Inbound,
-                                                &method,
-                                                tool.as_deref(),
-                                                &format!("deny:policy:{}", decision.rule_id),
-                                                Some(&decision.rule_id),
-                                                start.elapsed().as_micros() as u64,
-                                            )
-                                            .await;
-                                            // Fix 3: Send JSON-RPC error on policy deny.
-                                            let err_id = msg.id.clone().unwrap_or(Value::Null);
-                                            let err_resp = McpMessage::error_response(
-                                                err_id,
-                                                -32003,
-                                                format!("Denied by policy: {}", decision.rule_id),
-                                            );
-                                            if let Err(we) =
-                                                write_to_client(&gate_client_writer, &err_resp)
-                                                    .await
-                                            {
-                                                error!(%we, "failed to send policy error to client");
-                                                break;
-                                            }
-                                            continue;
-                                        }
-                                    }
-                                }
-
-                                // ── 5. Ledger: Record allowed request ──
-                                record_audit(
-                                    &gate_ledger,
-                                    request_id,
-                                    &principal,
-                                    Direction::Inbound,
-                                    &method,
-                                    tool.as_deref(),
-                                    "allow",
-                                    None,
-                                    start.elapsed().as_micros() as u64,
-                                )
-                                .await;
-
-                                // Forward to server
-                                if let Err(e) = server_writer.send(&msg).await {
-                                    error!(%e, "failed to forward to server");
-                                    break;
-                                }
-                            }
+                            },
                             Err(e) => {
-                                // Fix 7: Drop invalid JSON. Send a JSON-RPC parse
-                                // error back to the client instead of forwarding.
                                 warn!(%e, raw = trimmed, "invalid JSON from client, dropping");
                                 let err_resp = McpMessage::error_response(
                                     Value::Null,
                                     -32700,
                                     "Parse error: invalid JSON",
                                 );
-                                if let Err(we) =
-                                    write_to_client(&gate_client_writer, &err_resp).await
-                                {
+                                if let Err(we) = write_to_client(&inbound_writer, &err_resp).await {
                                     error!(%we, "failed to send parse error to client");
                                     break;
                                 }
@@ -541,202 +292,28 @@ impl Gate {
             }
         });
 
-        let schema_store = Arc::clone(&self.schema_store);
-        let outbound_ledger = Arc::clone(&self.ledger);
-        let outbound_scanner = Arc::clone(&self.injection_scanner);
-        let outbound_config = self.config.clone();
-        let outbound_client_writer = Arc::clone(&client_writer);
+        let outbound_state = Arc::clone(&state);
+        let outbound_writer = Arc::clone(&client_writer);
 
         // Server -> Client task (outbound interceptor chain)
-        let server_to_client = tokio::spawn(async move {
-            let mut first_tools_list = true;
-            // Cache the last known-good tools/list response for fallback
-            // when critical schema drift is detected.
-            let mut last_good_tools_result: Option<Value> = None;
-
+        let mut server_to_client = tokio::spawn(async move {
+            let mut ctx = OutboundContext::new();
             loop {
                 match server_reader.recv().await {
-                    Ok(msg) => {
-                        let start = std::time::Instant::now();
-                        let method = msg.method.as_deref().unwrap_or("-").to_string();
-                        let outbound_request_id = Uuid::new_v4();
-
-                        debug!(
-                            method = method.as_str(),
-                            id = ?msg.id,
-                            "server -> client"
-                        );
-
-                        let mut forward_msg = msg;
-
-                        // ── Schema Pin: Verify tools/list responses ──
-                        if outbound_config.enable_schema_pin {
-                            if let Some(result) = &forward_msg.result {
-                                if result.get("tools").is_some() {
-                                    let mut store = schema_store.lock().await;
-                                    if first_tools_list {
-                                        store.pin_tools(result);
-                                        info!(pinned = store.len(), "schema pins established");
-                                        // Cache the first (known-good) tools result.
-                                        last_good_tools_result = Some(result.clone());
-                                        first_tools_list = false;
-                                    } else {
-                                        let drifts = store.verify_tools(result);
-                                        if !drifts.is_empty() {
-                                            let mut has_critical_or_high = false;
-                                            for drift in &drifts {
-                                                warn!(
-                                                    tool = %drift.tool_name,
-                                                    drift_type = ?drift.drift_type,
-                                                    severity = ?drift.severity,
-                                                    "schema drift detected"
-                                                );
-                                                if matches!(
-                                                    drift.severity,
-                                                    DriftSeverity::Critical | DriftSeverity::High
-                                                ) {
-                                                    has_critical_or_high = true;
-                                                }
-                                            }
-
-                                            // Fix 5: Block Critical/High schema drift.
-                                            // Send the previously pinned (known-good)
-                                            // schema instead of the drifted response.
-                                            if has_critical_or_high {
-                                                warn!(
-                                                    "critical/high schema drift detected -- blocking drifted tools/list"
-                                                );
-                                                // Fix 9: Record outbound drift block.
-                                                record_audit(
-                                                    &outbound_ledger,
-                                                    outbound_request_id,
-                                                    "server",
-                                                    Direction::Outbound,
-                                                    "tools/list",
-                                                    None,
-                                                    "deny:schema_drift",
-                                                    None,
-                                                    start.elapsed().as_micros() as u64,
-                                                )
-                                                .await;
-
-                                                if let Some(ref good_result) =
-                                                    last_good_tools_result
-                                                {
-                                                    // Replace with the known-good schema.
-                                                    forward_msg.result = Some(good_result.clone());
-                                                } else {
-                                                    // No known-good schema available; send error.
-                                                    let err_id = forward_msg
-                                                        .id
-                                                        .clone()
-                                                        .unwrap_or(Value::Null);
-                                                    let err_resp = McpMessage::error_response(
-                                                        err_id,
-                                                        -32003,
-                                                        "Schema drift detected: tool definitions have been tampered with",
-                                                    );
-                                                    if let Err(we) = write_to_client(
-                                                        &outbound_client_writer,
-                                                        &err_resp,
-                                                    )
-                                                    .await
-                                                    {
-                                                        error!(%we, "failed to send schema drift error to client");
-                                                        break;
-                                                    }
-                                                    continue;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                    Ok(msg) => match outbound_state.process_outbound(msg, &mut ctx).await {
+                        OutboundAction::Forward(msg) => {
+                            if let Err(e) = write_to_client(&outbound_writer, &msg).await {
+                                error!(%e, "failed to write to client");
+                                break;
                             }
                         }
-
-                        // ── Outbound response scanning ──
-                        if outbound_config.enable_ward {
-                            if let Some(ref result) = forward_msg.result {
-                                let scan_target = if let Some(content) = result.get("content") {
-                                    serde_json::to_string(content).unwrap_or_default()
-                                } else {
-                                    serde_json::to_string(result).unwrap_or_default()
-                                };
-
-                                if !scan_target.is_empty() {
-                                    let matches = outbound_scanner.scan_text(&scan_target);
-                                    if !matches.is_empty() {
-                                        let pattern_names: Vec<&str> = matches
-                                            .iter()
-                                            .map(|m| m.pattern_name.as_str())
-                                            .collect();
-                                        let decision = if outbound_config.block_outbound_injection {
-                                            "deny:outbound_injection"
-                                        } else {
-                                            "warn:outbound_injection"
-                                        };
-                                        warn!(
-                                            patterns = ?pattern_names,
-                                            direction = "outbound",
-                                            blocked = outbound_config.block_outbound_injection,
-                                            "injection detected in server response"
-                                        );
-                                        record_audit(
-                                            &outbound_ledger,
-                                            outbound_request_id,
-                                            "server",
-                                            Direction::Outbound,
-                                            &method,
-                                            None,
-                                            &format!("{}:{}", decision, pattern_names.join(",")),
-                                            None,
-                                            start.elapsed().as_micros() as u64,
-                                        )
-                                        .await;
-
-                                        if outbound_config.block_outbound_injection {
-                                            let err_id =
-                                                forward_msg.id.clone().unwrap_or(Value::Null);
-                                            let err_resp = McpMessage::error_response(
-                                                err_id,
-                                                -32005,
-                                                "Response blocked: injection pattern detected in server output",
-                                            );
-                                            if let Err(we) =
-                                                write_to_client(&outbound_client_writer, &err_resp)
-                                                    .await
-                                            {
-                                                error!(%we, "failed to send outbound injection error");
-                                                break;
-                                            }
-                                            continue;
-                                        }
-                                    }
-                                }
+                        OutboundAction::Block(err_resp) => {
+                            if let Err(e) = write_to_client(&outbound_writer, &err_resp).await {
+                                error!(%e, "failed to send outbound error to client");
+                                break;
                             }
                         }
-
-                        // Record outbound audit entry
-                        record_audit(
-                            &outbound_ledger,
-                            outbound_request_id,
-                            "server",
-                            Direction::Outbound,
-                            &method,
-                            None,
-                            "forward",
-                            None,
-                            start.elapsed().as_micros() as u64,
-                        )
-                        .await;
-
-                        // Forward to client
-                        if let Err(e) = write_to_client(&outbound_client_writer, &forward_msg).await
-                        {
-                            error!(%e, "failed to write to client");
-                            break;
-                        }
-                    }
+                    },
                     Err(DomeError::Transport(ref e))
                         if e.kind() == std::io::ErrorKind::UnexpectedEof =>
                     {
@@ -751,28 +328,578 @@ impl Gate {
             }
         });
 
-        // Wait for either side to finish
+        // Wait for either side to finish, then abort the other.
         tokio::select! {
-            r = client_to_server => {
+            r = &mut client_to_server => {
                 if let Err(e) = r {
                     error!(%e, "client->server task panicked");
                 }
+                server_to_client.abort();
             }
-            r = server_to_client => {
+            r = &mut server_to_client => {
                 if let Err(e) = r {
                     error!(%e, "server->client task panicked");
+                }
+                client_to_server.abort();
+            }
+        }
+
+        // Flush audit log.
+        state.ledger.lock().await.flush();
+
+        // Graceful child termination: the child's stdin pipe was closed when
+        // the writer task ended/was aborted, so the child should see EOF and
+        // exit. Wait up to 5 seconds, then force-kill as a last resort.
+        match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
+            Ok(Ok(status)) => info!(%status, "upstream server exited"),
+            Ok(Err(e)) => warn!(%e, "error waiting for upstream server"),
+            Err(_) => {
+                warn!("upstream server did not exit within 5s, forcing termination");
+                let _ = child.kill().await;
+            }
+        }
+
+        info!("MCPDome proxy shut down");
+        Ok(())
+    }
+
+    /// Run the proxy over HTTP+SSE (HTTP server for the client, child process
+    /// for the upstream MCP server).
+    #[cfg(feature = "http")]
+    pub async fn run_http(
+        self,
+        command: &str,
+        args: &[&str],
+        http_config: dome_transport::http::HttpTransportConfig,
+    ) -> Result<(), DomeError> {
+        let state = self.into_proxy_state();
+
+        let transport = StdioTransport::spawn(command, args).await?;
+        let (mut server_reader, mut server_writer, mut child) = transport.split();
+
+        let http = dome_transport::http::HttpTransport::start(http_config).await?;
+        let (mut http_reader, http_writer, http_handle) = http.split();
+        let http_writer = Arc::new(http_writer);
+
+        info!("MCPDome HTTP+SSE proxy active -- interceptor chain armed");
+
+        let inbound_state = Arc::clone(&state);
+        let inbound_http_writer = Arc::clone(&http_writer);
+
+        // Client -> Server task (inbound interceptor chain via HTTP)
+        let mut client_to_server = tokio::spawn(async move {
+            loop {
+                match http_reader.recv().await {
+                    Ok(msg) => match inbound_state.process_inbound(msg).await {
+                        InboundAction::Forward(msg) => {
+                            if let Err(e) = server_writer.send(&msg).await {
+                                error!(%e, "failed to forward to server");
+                                break;
+                            }
+                        }
+                        InboundAction::Deny(err_resp) => {
+                            if let Err(e) = inbound_http_writer.send(&err_resp).await {
+                                warn!(%e, "failed to send error to HTTP client");
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        info!(%e, "HTTP client transport closed");
+                        break;
+                    }
+                }
+            }
+        });
+
+        let outbound_state = Arc::clone(&state);
+        let outbound_http_writer = Arc::clone(&http_writer);
+
+        // Server -> Client task (outbound interceptor chain via HTTP)
+        let mut server_to_client = tokio::spawn(async move {
+            let mut ctx = OutboundContext::new();
+            loop {
+                match server_reader.recv().await {
+                    Ok(msg) => match outbound_state.process_outbound(msg, &mut ctx).await {
+                        OutboundAction::Forward(msg) => {
+                            if let Err(e) = outbound_http_writer.send(&msg).await {
+                                warn!(%e, "failed to send to HTTP client");
+                                break;
+                            }
+                        }
+                        OutboundAction::Block(err_resp) => {
+                            if let Err(e) = outbound_http_writer.send(&err_resp).await {
+                                warn!(%e, "failed to send outbound error to HTTP client");
+                                break;
+                            }
+                        }
+                    },
+                    Err(DomeError::Transport(ref e))
+                        if e.kind() == std::io::ErrorKind::UnexpectedEof =>
+                    {
+                        info!("server closed stdout -- shutting down");
+                        break;
+                    }
+                    Err(e) => {
+                        error!(%e, "error reading from server");
+                        break;
+                    }
+                }
+            }
+        });
+
+        // Wait for either side to finish, then abort the other.
+        tokio::select! {
+            r = &mut client_to_server => {
+                if let Err(e) = r {
+                    error!(%e, "client->server task panicked");
+                }
+                server_to_client.abort();
+            }
+            r = &mut server_to_client => {
+                if let Err(e) = r {
+                    error!(%e, "server->client task panicked");
+                }
+                client_to_server.abort();
+            }
+        }
+
+        // Flush audit log.
+        state.ledger.lock().await.flush();
+
+        // Shut down HTTP server.
+        http_handle.shutdown().await;
+
+        // Graceful child termination.
+        match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
+            Ok(Ok(status)) => info!(%status, "upstream server exited"),
+            Ok(Err(e)) => warn!(%e, "error waiting for upstream server"),
+            Err(_) => {
+                warn!("upstream server did not exit within 5s, forcing termination");
+                let _ = child.kill().await;
+            }
+        }
+
+        info!("MCPDome HTTP+SSE proxy shut down");
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ProxyState — shared interceptor chain state
+// ---------------------------------------------------------------------------
+
+/// Internal shared state for the proxy loop. Created from a [`Gate`] at the
+/// start of a proxy session. Holds all interceptor chain components behind
+/// appropriate synchronization primitives so both the inbound (client → server)
+/// and outbound (server → client) tasks can share it via `Arc`.
+struct ProxyState {
+    identity: Mutex<Option<dome_sentinel::Identity>>,
+    resolver: IdentityResolver,
+    config: GateConfig,
+    policy: Option<SharedPolicyEngine>,
+    rate_limiter: Arc<RateLimiter>,
+    budget: Arc<BudgetTracker>,
+    scanner: Arc<InjectionScanner>,
+    schema_store: Arc<Mutex<SchemaPinStore>>,
+    ledger: Arc<Mutex<Ledger>>,
+}
+
+impl ProxyState {
+    /// Process an inbound (client → server) message through the full
+    /// interceptor chain: Sentinel → Throttle → Ward → Policy → Ledger.
+    async fn process_inbound(&self, msg: McpMessage) -> InboundAction {
+        let start = std::time::Instant::now();
+        let method = msg.method.as_deref().unwrap_or("-").to_string();
+        let tool = msg.tool_name().map(String::from);
+        let request_id = Uuid::new_v4();
+
+        debug!(
+            method = method.as_str(),
+            id = ?msg.id,
+            tool = tool.as_deref().unwrap_or("-"),
+            "client -> server"
+        );
+
+        // ── 1. Sentinel: Authenticate on initialize ──
+        let mut msg = msg;
+        if method == "initialize" {
+            match self.resolver.resolve(&msg).await {
+                Ok(id) => {
+                    info!(
+                        principal = %id.principal,
+                        method = %id.auth_method,
+                        "identity resolved"
+                    );
+                    *self.identity.lock().await = Some(id);
+
+                    // Strip all credential fields before forwarding.
+                    msg = PskAuthenticator::strip_psk(&msg);
+                    msg = ApiKeyAuthenticator::strip_api_key(&msg);
+                }
+                Err(e) => {
+                    warn!(%e, "authentication failed");
+                    let err_id = msg.id.clone().unwrap_or(Value::Null);
+                    return InboundAction::Deny(McpMessage::error_response(
+                        err_id,
+                        -32600,
+                        "Authentication failed",
+                    ));
                 }
             }
         }
 
-        // Flush audit log and clean up
-        self.ledger.lock().await.flush();
-        let _ = child.kill().await;
-        info!("MCPDome proxy shut down");
+        // Block all non-initialize requests before the session has been
+        // initialized (identity resolved).
+        if method != "initialize" {
+            let identity_lock = self.identity.lock().await;
+            if identity_lock.is_none() {
+                drop(identity_lock);
+                warn!(method = %method, "request before initialize");
+                let err_id = msg.id.clone().unwrap_or(Value::Null);
+                return InboundAction::Deny(McpMessage::error_response(
+                    err_id,
+                    -32600,
+                    "Session not initialized",
+                ));
+            }
+            drop(identity_lock);
+        }
 
-        Ok(())
+        let identity_lock = self.identity.lock().await;
+        let principal = identity_lock
+            .as_ref()
+            .map(|i| i.principal.clone())
+            .unwrap_or_else(|| "anonymous".to_string());
+        let labels = identity_lock
+            .as_ref()
+            .map(|i| i.labels.clone())
+            .unwrap_or_default();
+        drop(identity_lock);
+
+        // Extract the method-specific resource name for policy evaluation.
+        let resource_name = msg.method_resource_name().unwrap_or("-").to_string();
+        let tool_name = resource_name.as_str();
+
+        let args = msg
+            .params
+            .as_ref()
+            .and_then(|p| p.get("arguments"))
+            .cloned()
+            .unwrap_or(Value::Null);
+
+        // ── 2. Throttle: Rate limit check ──
+        if self.config.enable_rate_limit {
+            let rl_tool = if tool_name != "-" {
+                Some(tool_name)
+            } else {
+                None
+            };
+            if let Err(e) = self.rate_limiter.check_rate_limit(&principal, rl_tool) {
+                warn!(%e, principal = %principal, method = %method, "rate limited");
+                record_audit(
+                    &self.ledger,
+                    request_id,
+                    &principal,
+                    Direction::Inbound,
+                    &method,
+                    tool.as_deref(),
+                    "deny:rate_limit",
+                    None,
+                    start.elapsed().as_micros() as u64,
+                )
+                .await;
+                let err_id = msg.id.clone().unwrap_or(Value::Null);
+                return InboundAction::Deny(McpMessage::error_response(
+                    err_id,
+                    -32000,
+                    "Rate limit exceeded",
+                ));
+            }
+        }
+
+        // ── 2b. Throttle: Budget check ──
+        if self.config.enable_budget {
+            if let Err(e) = self.budget.try_spend(&principal, 1.0) {
+                warn!(%e, principal = %principal, "budget exhausted");
+                record_audit(
+                    &self.ledger,
+                    request_id,
+                    &principal,
+                    Direction::Inbound,
+                    &method,
+                    tool.as_deref(),
+                    "deny:budget",
+                    None,
+                    start.elapsed().as_micros() as u64,
+                )
+                .await;
+                let err_id = msg.id.clone().unwrap_or(Value::Null);
+                return InboundAction::Deny(McpMessage::error_response(
+                    err_id,
+                    -32000,
+                    "Budget exhausted",
+                ));
+            }
+        }
+
+        // ── 3. Ward: Injection scanning ──
+        // Ward runs BEFORE policy so injection detection is applied regardless
+        // of authorization level.
+        if self.config.enable_ward {
+            let scan_text = if method == "tools/call" {
+                serde_json::to_string(&args).unwrap_or_default()
+            } else if let Some(ref params) = msg.params {
+                serde_json::to_string(params).unwrap_or_default()
+            } else {
+                String::new()
+            };
+
+            if !scan_text.is_empty() {
+                let matches = self.scanner.scan_text(&scan_text);
+                if !matches.is_empty() {
+                    let pattern_names: Vec<&str> =
+                        matches.iter().map(|m| m.pattern_name.as_str()).collect();
+                    warn!(
+                        patterns = ?pattern_names,
+                        method = %method,
+                        tool = tool_name,
+                        principal = %principal,
+                        "injection detected"
+                    );
+                    record_audit(
+                        &self.ledger,
+                        request_id,
+                        &principal,
+                        Direction::Inbound,
+                        &method,
+                        tool.as_deref(),
+                        &format!("deny:injection:{}", pattern_names.join(",")),
+                        None,
+                        start.elapsed().as_micros() as u64,
+                    )
+                    .await;
+                    let err_id = msg.id.clone().unwrap_or(Value::Null);
+                    return InboundAction::Deny(McpMessage::error_response(
+                        err_id,
+                        -32003,
+                        "Request blocked: injection pattern detected",
+                    ));
+                }
+            }
+        }
+
+        // ── 4. Policy: Authorization ──
+        if self.config.enforce_policy {
+            if let Some(ref shared_engine) = self.policy {
+                // Load the current policy atomically. This is lock-free and
+                // picks up hot-reloaded changes immediately.
+                let engine = shared_engine.load();
+
+                let policy_resource = if method == "tools/call" {
+                    tool_name
+                } else {
+                    method.as_str()
+                };
+                let policy_id = PolicyIdentity::new(principal.clone(), labels.iter().cloned());
+                let decision = engine.evaluate(&policy_id, policy_resource, &args);
+
+                if !decision.is_allowed() {
+                    warn!(
+                        rule_id = %decision.rule_id,
+                        method = %method,
+                        resource = policy_resource,
+                        principal = %principal,
+                        "policy denied"
+                    );
+                    record_audit(
+                        &self.ledger,
+                        request_id,
+                        &principal,
+                        Direction::Inbound,
+                        &method,
+                        tool.as_deref(),
+                        &format!("deny:policy:{}", decision.rule_id),
+                        Some(&decision.rule_id),
+                        start.elapsed().as_micros() as u64,
+                    )
+                    .await;
+                    let err_id = msg.id.clone().unwrap_or(Value::Null);
+                    return InboundAction::Deny(McpMessage::error_response(
+                        err_id,
+                        -32003,
+                        format!("Denied by policy: {}", decision.rule_id),
+                    ));
+                }
+            }
+        }
+
+        // ── 5. Ledger: Record allowed request ──
+        record_audit(
+            &self.ledger,
+            request_id,
+            &principal,
+            Direction::Inbound,
+            &method,
+            tool.as_deref(),
+            "allow",
+            None,
+            start.elapsed().as_micros() as u64,
+        )
+        .await;
+
+        InboundAction::Forward(msg)
+    }
+
+    /// Process an outbound (server → client) message through the outbound
+    /// interceptor chain: Schema Pin → Ward → Ledger.
+    async fn process_outbound(&self, msg: McpMessage, ctx: &mut OutboundContext) -> OutboundAction {
+        let start = std::time::Instant::now();
+        let method = msg.method.as_deref().unwrap_or("-").to_string();
+        let outbound_request_id = Uuid::new_v4();
+
+        debug!(
+            method = method.as_str(),
+            id = ?msg.id,
+            "server -> client"
+        );
+
+        let mut forward_msg = msg;
+
+        // ── Schema Pin: Verify tools/list responses ──
+        if self.config.enable_schema_pin {
+            if let Some(result) = &forward_msg.result {
+                if result.get("tools").is_some() {
+                    let mut store = self.schema_store.lock().await;
+                    if ctx.first_tools_list {
+                        store.pin_tools(result);
+                        info!(pinned = store.len(), "schema pins established");
+                        ctx.last_good_tools_result = Some(result.clone());
+                        ctx.first_tools_list = false;
+                    } else {
+                        let drifts = store.verify_tools(result);
+                        if !drifts.is_empty() {
+                            let mut has_critical_or_high = false;
+                            for drift in &drifts {
+                                warn!(
+                                    tool = %drift.tool_name,
+                                    drift_type = ?drift.drift_type,
+                                    severity = ?drift.severity,
+                                    "schema drift detected"
+                                );
+                                if matches!(
+                                    drift.severity,
+                                    DriftSeverity::Critical | DriftSeverity::High
+                                ) {
+                                    has_critical_or_high = true;
+                                }
+                            }
+
+                            if has_critical_or_high {
+                                warn!(
+                                    "critical/high schema drift detected -- blocking drifted tools/list"
+                                );
+                                record_audit(
+                                    &self.ledger,
+                                    outbound_request_id,
+                                    "server",
+                                    Direction::Outbound,
+                                    "tools/list",
+                                    None,
+                                    "deny:schema_drift",
+                                    None,
+                                    start.elapsed().as_micros() as u64,
+                                )
+                                .await;
+
+                                if let Some(ref good_result) = ctx.last_good_tools_result {
+                                    forward_msg.result = Some(good_result.clone());
+                                } else {
+                                    let err_id = forward_msg.id.clone().unwrap_or(Value::Null);
+                                    return OutboundAction::Block(McpMessage::error_response(
+                                        err_id,
+                                        -32003,
+                                        "Schema drift detected: tool definitions have been tampered with",
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Outbound response scanning ──
+        if self.config.enable_ward {
+            if let Some(ref result) = forward_msg.result {
+                let scan_target = if let Some(content) = result.get("content") {
+                    serde_json::to_string(content).unwrap_or_default()
+                } else {
+                    serde_json::to_string(result).unwrap_or_default()
+                };
+
+                if !scan_target.is_empty() {
+                    let matches = self.scanner.scan_text(&scan_target);
+                    if !matches.is_empty() {
+                        let pattern_names: Vec<&str> =
+                            matches.iter().map(|m| m.pattern_name.as_str()).collect();
+                        let decision = if self.config.block_outbound_injection {
+                            "deny:outbound_injection"
+                        } else {
+                            "warn:outbound_injection"
+                        };
+                        warn!(
+                            patterns = ?pattern_names,
+                            direction = "outbound",
+                            blocked = self.config.block_outbound_injection,
+                            "injection detected in server response"
+                        );
+                        record_audit(
+                            &self.ledger,
+                            outbound_request_id,
+                            "server",
+                            Direction::Outbound,
+                            &method,
+                            None,
+                            &format!("{}:{}", decision, pattern_names.join(",")),
+                            None,
+                            start.elapsed().as_micros() as u64,
+                        )
+                        .await;
+
+                        if self.config.block_outbound_injection {
+                            let err_id = forward_msg.id.clone().unwrap_or(Value::Null);
+                            return OutboundAction::Block(McpMessage::error_response(
+                                err_id,
+                                -32005,
+                                "Response blocked: injection pattern detected in server output",
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Record outbound audit entry.
+        record_audit(
+            &self.ledger,
+            outbound_request_id,
+            "server",
+            Direction::Outbound,
+            &method,
+            None,
+            "forward",
+            None,
+            start.elapsed().as_micros() as u64,
+        )
+        .await;
+
+        OutboundAction::Forward(forward_msg)
     }
 }
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 /// Write a McpMessage to the client's stdout, with newline and flush.
 async fn write_to_client(
@@ -1031,6 +1158,20 @@ mod tests {
         );
 
         assert!(gate.policy_engine.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Gate Debug impl
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn gate_is_debug_printable() {
+        let gate = Gate::transparent(empty_ledger());
+        let debug_output = format!("{:?}", gate);
+
+        assert!(debug_output.contains("Gate"));
+        assert!(debug_output.contains("config"));
+        assert!(debug_output.contains("has_policy_engine"));
     }
 
     // -----------------------------------------------------------------------

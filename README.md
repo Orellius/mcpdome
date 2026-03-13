@@ -59,8 +59,9 @@ AI agents are getting access to powerful tools — file systems, databases, APIs
 - **Hash-chained audit logs** — Tamper-evident NDJSON logging with SHA-256 chain linking, full inbound + outbound coverage
 - **Token-bucket rate limiting** — Global, per-identity, and per-tool limits with LRU eviction and TTL-based cleanup
 - **Multiple auth methods** — Argon2id-hashed PSKs, API key authentication, OAuth2 scaffolding, with timing-safe verification and automatic credential stripping
-- **HTTP+SSE transport** — Feature-gated HTTP transport with Server-Sent Events, session management, restricted CORS, and 256KB body limits (in addition to stdio)
+- **HTTP+SSE transport** — Feature-gated HTTP transport with Server-Sent Events, session management, restricted CORS, and 256KB body limits — selectable via `--transport http`
 - **Bounded I/O** — 10MB max message size, 5-minute read timeouts, 30-second write timeouts to prevent resource exhaustion
+- **Graceful shutdown** — SIGTERM/SIGINT signal handling with clean child process termination (SIGTERM → wait → SIGKILL fallback), upstream command validation before spawn
 - **Full method coverage** — All MCP methods are guarded (not just `tools/call`), with method-specific resource extraction (tool names, resource URIs, prompt names) for fine-grained policy rules
 - **Outbound scanning** — Server responses are scanned for injection patterns before reaching the AI agent
 - **CLI toolbox** — `validate`, `verify-log`, `hash-schema`, `keygen` subcommands plus unified `--config` file support
@@ -100,6 +101,9 @@ mcpdome proxy --upstream "..." --enable-rate-limit
 
 # Everything with a config file
 mcpdome proxy --upstream "..." --config mcpdome.toml
+
+# HTTP+SSE transport (instead of stdio)
+mcpdome proxy --upstream "..." --transport http --bind-addr 127.0.0.1:3100
 ```
 
 ## CLI Tools
@@ -215,17 +219,18 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full deep dive.
 
 ## Test Suite
 
-226 tests covering every security component:
+235 tests covering every security component:
 
 ```
 dome-core       10 tests   (message parsing, error mapping, resource/prompt extraction)
-dome-gate       22 tests   (config defaults, interceptor chain, audit recording, constants)
+dome-gate       23 tests   (config defaults, interceptor chain, audit recording, Debug impl, constants)
 dome-sentinel   30 tests   (PSK auth, API keys, Argon2id, timing-safe verification, chain resolution)
 dome-policy     39 tests   (rules, priority, recursive args, time-windows, hot-reload, concurrent reads)
 dome-throttle   22 tests   (token bucket, rate limits, budgets, LRU eviction, global limits, TOCTOU safety)
 dome-ward       56 tests   (injection patterns, Unicode normalization, recursive scanning, schema pins, heuristics)
 dome-ledger     21 tests   (hash chain, tamper detection, file rotation, chain integrity validation)
-mcpdome binary  19 tests   (CLI subcommands: validate, verify-log, hash-schema, keygen)
+mcpdome binary  22 tests   (CLI subcommands, upstream validation, verify-log, hash-schema, keygen)
+dome-transport   5 tests   (HTTP+SSE: connection, roundtrip, CORS, session cleanup, 404)
 integration      7 tests   (full binary proxy end-to-end)
 ```
 

@@ -96,8 +96,8 @@ path = "src/main.rs"
 
 [dependencies]
 dome-core.workspace = true
-dome-transport.workspace = true
-dome-gate.workspace = true
+dome-transport = { workspace = true, features = ["http"] }
+dome-gate = { workspace = true, features = ["http"] }
 dome-sentinel.workspace = true
 dome-policy.workspace = true
 dome-throttle.workspace = true

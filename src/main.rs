@@ -66,6 +66,14 @@ enum Commands {
         /// Enable rate limiting
         #[arg(long, default_value_t = false)]
         enable_rate_limit: bool,
+
+        /// Transport mode: "stdio" (default) or "http"
+        #[arg(long, default_value = "stdio")]
+        transport: String,
+
+        /// HTTP bind address (only used with --transport http)
+        #[arg(long, default_value = "127.0.0.1:3100")]
+        bind_addr: String,
     },
 
     /// Validate a policy TOML file without starting the proxy
@@ -172,6 +180,77 @@ fn default_version() -> String {
 
 fn default_effect() -> String {
     "deny".to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Upstream command validation
+// ---------------------------------------------------------------------------
+
+/// Check if a command exists in PATH (or is an absolute path that exists).
+fn validate_upstream_command(command: &str) -> Result<(), String> {
+    let path = std::path::Path::new(command);
+
+    if path.is_absolute() {
+        if path.exists() {
+            return Ok(());
+        }
+        return Err(format!("upstream command not found: {command}"));
+    }
+
+    // For relative names, check PATH.
+    if let Some(paths) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&paths) {
+            let full = dir.join(command);
+            if full.exists() {
+                return Ok(());
+            }
+            // On Windows, also check with .exe extension.
+            #[cfg(windows)]
+            {
+                let with_exe = dir.join(format!("{command}.exe"));
+                if with_exe.exists() {
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    Err(format!(
+        "upstream command '{command}' not found in PATH. \
+         Make sure the command is installed and available."
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// Signal handling
+// ---------------------------------------------------------------------------
+
+/// Wait for a shutdown signal (SIGTERM or SIGINT/Ctrl+C).
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+
+        let mut sigterm =
+            signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
+
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                eprintln!("\nMCPDome: received SIGINT, shutting down gracefully...");
+            }
+            _ = sigterm.recv() => {
+                eprintln!("MCPDome: received SIGTERM, shutting down gracefully...");
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to listen for Ctrl+C");
+        eprintln!("\nMCPDome: received Ctrl+C, shutting down gracefully...");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -404,6 +483,8 @@ async fn main() -> anyhow::Result<()> {
             enable_ward,
             enable_schema_pin,
             enable_rate_limit,
+            transport,
+            bind_addr,
         } => {
             // Attempt to load the unified config file.
             let config_path = std::path::Path::new(&config);
@@ -511,6 +592,11 @@ async fn main() -> anyhow::Result<()> {
             let command = parts[0];
             let args = &parts[1..];
 
+            // Validate the upstream command exists before attempting to spawn.
+            if let Err(e) = validate_upstream_command(command) {
+                anyhow::bail!("{e}");
+            }
+
             // Load policy engine with hot-reload if enforcement is enabled.
             let policy_engine: Option<SharedPolicyEngine> =
                 if gate_config.enforce_policy && config_path.exists() {
@@ -540,10 +626,46 @@ async fn main() -> anyhow::Result<()> {
                 ledger,
             );
 
-            if let Err(e) = gate.run_stdio(command, args).await {
-                eprintln!("MCPDome proxy exited with error: {e}");
-                eprintln!("Audit logs may not have been flushed completely.");
-                return Err(e.into());
+            // Run the proxy with the selected transport, racing against
+            // shutdown signals (SIGTERM/SIGINT) for graceful termination.
+            match transport.as_str() {
+                "stdio" => {
+                    tokio::select! {
+                        result = gate.run_stdio(command, args) => {
+                            if let Err(e) = result {
+                                eprintln!("MCPDome proxy exited with error: {e}");
+                                eprintln!("Audit logs may not have been flushed completely.");
+                                return Err(e.into());
+                            }
+                        }
+                        _ = shutdown_signal() => {
+                            info!("graceful shutdown complete");
+                        }
+                    }
+                }
+                "http" => {
+                    let addr: std::net::SocketAddr = bind_addr
+                        .parse()
+                        .map_err(|e| anyhow::anyhow!("invalid --bind-addr '{bind_addr}': {e}"))?;
+                    let http_config = dome_transport::http::HttpTransportConfig {
+                        bind_addr: addr,
+                        allowed_origins: None,
+                    };
+                    tokio::select! {
+                        result = gate.run_http(command, args, http_config) => {
+                            if let Err(e) = result {
+                                eprintln!("MCPDome HTTP proxy exited with error: {e}");
+                                return Err(e.into());
+                            }
+                        }
+                        _ = shutdown_signal() => {
+                            info!("graceful shutdown complete");
+                        }
+                    }
+                }
+                other => {
+                    anyhow::bail!("unknown transport '{other}'. Supported: stdio, http");
+                }
             }
         }
 
@@ -940,6 +1062,31 @@ version = "1"
         let output1 = run_keygen();
         let output2 = run_keygen();
         assert_ne!(output1, output2);
+    }
+
+    // ---- upstream command validation tests ----
+
+    #[test]
+    fn validate_upstream_command_finds_common_commands() {
+        // "ls" or "echo" should exist on any Unix system; "cmd" on Windows.
+        #[cfg(unix)]
+        assert!(validate_upstream_command("ls").is_ok());
+        #[cfg(windows)]
+        assert!(validate_upstream_command("cmd").is_ok());
+    }
+
+    #[test]
+    fn validate_upstream_command_rejects_nonexistent() {
+        let result = validate_upstream_command("surely_nonexistent_command_xyz_12345");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    fn validate_upstream_command_rejects_nonexistent_absolute_path() {
+        let result = validate_upstream_command("/nonexistent/path/to/binary");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
     }
 
     // ---- Helper ----

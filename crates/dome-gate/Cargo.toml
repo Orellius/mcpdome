@@ -7,6 +7,10 @@ authors.workspace = true
 description = "Interceptor chain orchestration for MCPDome"
 repository.workspace = true
 
+[features]
+default = []
+http = ["dome-transport/http"]
+
 [dependencies]
 dome-core.workspace = true
 dome-transport.workspace = true

@@ -4,7 +4,7 @@ Interceptor chain orchestration for MCPDome -- the core proxy that wires all sec
 
 ## What it does
 
-- Runs the MCPDome proxy loop, sitting between the MCP client and server on stdio.
+- Runs the MCPDome proxy loop, sitting between the MCP client and server over **stdio or HTTP+SSE transport**.
 - **Enforces session initialization** — blocks all requests until the client completes `initialize` with valid credentials. Returns JSON-RPC errors on auth failure (never forwards unauthenticated requests).
 - Orchestrates the full inbound interceptor chain: Sentinel (auth) → Throttle (rate limit) → **Ward (injection)** → Policy (authz) → Ledger (audit). Ward runs before Policy so injection detection cannot be bypassed by permissive rules.
 - **Guards all MCP methods** — not just `tools/call`. Rate limiting, policy, and injection scanning apply to `resources/read`, `prompts/get`, and all other methods. Uses method-specific resource extraction (tool names, URIs, prompt names) for fine-grained policy evaluation.
@@ -12,21 +12,34 @@ Interceptor chain orchestration for MCPDome -- the core proxy that wires all sec
 - **Strips all credentials** (PSK and API key) from `initialize` messages before forwarding to the upstream server.
 - **Configurable outbound injection blocking** — scans server responses for injection patterns with option to block (not just warn) when threats are detected in outbound messages.
 - **Bounded client reads** — enforces 10MB max message size and 5-minute read timeout on client connections.
+- **Graceful child termination** — sends EOF to child process stdin and waits up to 5 seconds for clean exit; only force-kills as a last resort.
 - Records every inbound and outbound decision to the hash-chained audit ledger.
 - Drops invalid JSON with parse error responses instead of forwarding malformed messages.
+
+## Features
+
+- `http` — enables `run_http()` for HTTP+SSE client transport (adds `dome-transport/http` dependency).
 
 ## Usage
 
 ```toml
 [dependencies]
 dome-gate = "0.3"
+
+# With HTTP+SSE transport support:
+# dome-gate = { version = "0.3", features = ["http"] }
 ```
 
 ```rust
 use dome_gate::{Gate, GateConfig};
 
 let gate = Gate::new(config, authenticators, policy_engine, rate_config, budget_config, ledger);
+
+// Stdio transport (default):
 gate.run_stdio("mcp-server", &["--stdio"]).await?;
+
+// HTTP+SSE transport (requires "http" feature):
+// gate.run_http("mcp-server", &["--stdio"], http_config).await?;
 ```
 
 ## Part of MCPDome
