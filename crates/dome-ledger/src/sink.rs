@@ -137,7 +137,7 @@ impl FileSink {
     }
 }
 
-fn open_append(path: &PathBuf) -> Result<std::fs::File, SinkError> {
+fn open_append(path: &std::path::Path) -> Result<std::fs::File, SinkError> {
     std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -150,7 +150,7 @@ fn open_append(path: &PathBuf) -> Result<std::fs::File, SinkError> {
 
 impl AuditSink for FileSink {
     fn write_entry(&self, _entry: &AuditEntry, json_line: &str) -> Result<(), SinkError> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
 
         // Check rotation before writing
         if self.max_bytes > 0 && state.bytes_written > self.max_bytes {
@@ -173,7 +173,7 @@ impl AuditSink for FileSink {
     }
 
     fn flush(&self) -> Result<(), SinkError> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.writer.flush().map_err(|e| SinkError::Io {
             sink: self.name().to_string(),
             source: e,

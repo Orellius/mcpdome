@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::extract::{Query, State};
+use axum::extract::{DefaultBodyLimit, Query, State};
 use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -39,7 +39,7 @@ use uuid::Uuid;
 pub struct HttpTransportConfig {
     /// Address to bind the HTTP server to.
     pub bind_addr: SocketAddr,
-    /// Allowed CORS origins. `None` means allow all (`*`).
+    /// Allowed CORS origins. `None` restricts to `http://localhost` only.
     pub allowed_origins: Option<Vec<String>>,
 }
 
@@ -116,6 +116,7 @@ impl HttpTransport {
         let app = Router::new()
             .route("/sse", get(handle_sse))
             .route("/message", post(handle_message))
+            .layer(DefaultBodyLimit::max(256 * 1024))
             .layer(cors)
             .with_state(Arc::clone(&state));
 
@@ -349,7 +350,9 @@ fn build_cors_layer(allowed_origins: &Option<Vec<String>>) -> CorsLayer {
             let parsed: Vec<HeaderValue> = origins.iter().filter_map(|o| o.parse().ok()).collect();
             cors.allow_origin(AllowOrigin::list(parsed))
         }
-        _ => cors.allow_origin(AllowOrigin::any()),
+        _ => cors.allow_origin(AllowOrigin::exact(
+            "http://localhost".parse().unwrap(),
+        )),
     }
 }
 

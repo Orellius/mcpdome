@@ -2,9 +2,14 @@ use async_trait::async_trait;
 use dome_core::{DomeError, McpMessage};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::time::{Duration, timeout};
 use tracing::{debug, info};
 
 use crate::Transport;
+
+const MAX_LINE_SIZE: usize = 10 * 1024 * 1024; // 10 MB
+const READ_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Stdio transport that spawns an MCP server as a child process
 /// and communicates via stdin/stdout (newline-delimited JSON-RPC).
@@ -73,7 +78,14 @@ impl StdioReader {
         let mut line = String::new();
         loop {
             line.clear();
-            let bytes_read = self.reader.read_line(&mut line).await?;
+            let bytes_read = timeout(READ_TIMEOUT, self.reader.read_line(&mut line))
+                .await
+                .map_err(|_| {
+                    DomeError::Transport(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "read from server timed out",
+                    ))
+                })??;
             if bytes_read == 0 {
                 return Err(DomeError::Transport(std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,
@@ -81,9 +93,16 @@ impl StdioReader {
                 )));
             }
 
+            if line.len() > MAX_LINE_SIZE {
+                return Err(DomeError::Transport(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("line exceeds maximum size of {MAX_LINE_SIZE} bytes"),
+                )));
+            }
+
             let trimmed = line.trim();
             if trimmed.is_empty() {
-                continue; // skip blank lines
+                continue;
             }
 
             debug!(raw = trimmed, "recv from server");
@@ -97,9 +116,19 @@ impl StdioWriter {
     pub async fn send(&mut self, msg: &McpMessage) -> Result<(), DomeError> {
         let json = msg.to_json()?;
         debug!(raw = json.as_str(), "send to server");
-        self.writer.write_all(json.as_bytes()).await?;
-        self.writer.write_all(b"\n").await?;
-        self.writer.flush().await?;
+        timeout(WRITE_TIMEOUT, async {
+            self.writer.write_all(json.as_bytes()).await?;
+            self.writer.write_all(b"\n").await?;
+            self.writer.flush().await?;
+            Ok::<(), std::io::Error>(())
+        })
+        .await
+        .map_err(|_| {
+            DomeError::Transport(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "write to server timed out",
+            ))
+        })??;
         Ok(())
     }
 }
@@ -110,11 +139,25 @@ impl Transport for StdioTransport {
         let mut line = String::new();
         loop {
             line.clear();
-            let bytes_read = self.reader.read_line(&mut line).await?;
+            let bytes_read = timeout(READ_TIMEOUT, self.reader.read_line(&mut line))
+                .await
+                .map_err(|_| {
+                    DomeError::Transport(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "read from server timed out",
+                    ))
+                })??;
             if bytes_read == 0 {
                 return Err(DomeError::Transport(std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,
                     "server closed stdout",
+                )));
+            }
+
+            if line.len() > MAX_LINE_SIZE {
+                return Err(DomeError::Transport(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("line exceeds maximum size of {MAX_LINE_SIZE} bytes"),
                 )));
             }
 
@@ -131,9 +174,19 @@ impl Transport for StdioTransport {
     async fn send(&mut self, msg: &McpMessage) -> Result<(), DomeError> {
         let json = msg.to_json()?;
         debug!(raw = json.as_str(), "send to server");
-        self.writer.write_all(json.as_bytes()).await?;
-        self.writer.write_all(b"\n").await?;
-        self.writer.flush().await?;
+        timeout(WRITE_TIMEOUT, async {
+            self.writer.write_all(json.as_bytes()).await?;
+            self.writer.write_all(b"\n").await?;
+            self.writer.flush().await?;
+            Ok::<(), std::io::Error>(())
+        })
+        .await
+        .map_err(|_| {
+            DomeError::Transport(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "write to server timed out",
+            ))
+        })??;
         Ok(())
     }
 

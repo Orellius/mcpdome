@@ -8,7 +8,7 @@ pub mod chain;
 pub mod entry;
 pub mod sink;
 
-pub use chain::{ChainError, GENESIS_HASH, HashChain, verify_chain};
+pub use chain::{ChainAppendError, ChainError, GENESIS_HASH, HashChain, verify_chain};
 pub use entry::{AuditEntry, Direction};
 pub use sink::{AuditSink, FileSink, SinkError, StderrSink};
 
@@ -39,10 +39,7 @@ impl Ledger {
         entry.seq = self.chain.len();
         entry.prev_hash = self.chain.current_hash().to_string();
 
-        let _hash = self
-            .chain
-            .append(&entry)
-            .map_err(|e| LedgerError::Serialization(e.to_string()))?;
+        let _hash = self.chain.append(&entry)?;
 
         let json_line =
             serde_json::to_string(&entry).map_err(|e| LedgerError::Serialization(e.to_string()))?;
@@ -73,6 +70,9 @@ impl Ledger {
 
 #[derive(Debug, thiserror::Error)]
 pub enum LedgerError {
+    #[error("chain append failed: {0}")]
+    ChainAppend(#[from] ChainAppendError),
+
     #[error("serialization error: {0}")]
     Serialization(String),
 }

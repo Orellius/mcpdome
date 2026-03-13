@@ -169,24 +169,24 @@ impl RateLimiter {
     /// Get or create a bucket, try to acquire a token, and trigger cleanup if needed.
     fn get_or_insert_bucket(&self, key: BucketKey, max: f64, rate: f64) -> bool {
         let now = Instant::now();
-        let is_new = !self.buckets.contains_key(&key);
 
-        let mut entry = self.buckets.entry(key).or_insert_with(|| TrackedBucket {
-            bucket: TokenBucket::new(max, rate),
-            last_used: now,
+        let mut entry = self.buckets.entry(key).or_insert_with(|| {
+            // Only runs if we actually insert a new entry
+            self.insert_counter.fetch_add(1, Ordering::Relaxed);
+            TrackedBucket {
+                bucket: TokenBucket::new(max, rate),
+                last_used: now,
+            }
         });
 
         entry.last_used = now;
         let ok = entry.bucket.try_acquire();
 
-        // If we inserted a new entry, bump the counter and maybe clean up
-        if is_new {
-            let count = self.insert_counter.fetch_add(1, Ordering::Relaxed);
-            // Every 100 insertions, check if we need cleanup
-            if count % 100 == 99 {
-                drop(entry); // Release the DashMap ref before cleanup
-                self.maybe_cleanup();
-            }
+        // Periodically check if cleanup is needed
+        let count = self.insert_counter.load(Ordering::Relaxed);
+        if count > 0 && count % 100 == 0 && self.buckets.len() > self.config.max_entries {
+            drop(entry);
+            self.maybe_cleanup();
         }
 
         ok
