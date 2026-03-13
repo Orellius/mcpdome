@@ -15,7 +15,7 @@ Hash-chained audit logging with multiple sinks for MCPDome.
 
 ```toml
 [dependencies]
-dome-ledger = "0.3"
+dome-ledger = "0.4"
 ```
 
 ```rust

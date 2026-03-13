@@ -17,7 +17,7 @@ MCP wire protocol transport layer for MCPDome, supporting stdio and HTTP+SSE com
 
 ```toml
 [dependencies]
-dome-transport = "0.3"
+dome-transport = "0.4"
 ```
 
 ```rust

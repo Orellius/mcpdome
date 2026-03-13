@@ -15,7 +15,7 @@ Token-bucket rate limiting and budget tracking for MCPDome.
 
 ```toml
 [dependencies]
-dome-throttle = "0.3"
+dome-throttle = "0.4"
 ```
 
 ```rust

@@ -15,7 +15,7 @@ Authentication and identity resolution for MCPDome.
 
 ```toml
 [dependencies]
-dome-sentinel = "0.3"
+dome-sentinel = "0.4"
 ```
 
 ```rust

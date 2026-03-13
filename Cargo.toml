@@ -3,7 +3,7 @@ members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 license = "Apache-2.0"
 authors = ["Orel Ohayon <orel@orellius.ai>"]
@@ -68,14 +68,14 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 futures = "0.3"
 
 # Internal crates
-dome-core = { version = "0.3.0", path = "crates/dome-core" }
-dome-ward = { version = "0.3.0", path = "crates/dome-ward" }
-dome-transport = { version = "0.3.0", path = "crates/dome-transport" }
-dome-gate = { version = "0.3.0", path = "crates/dome-gate" }
-dome-ledger = { version = "0.3.0", path = "crates/dome-ledger" }
-dome-sentinel = { version = "0.3.0", path = "crates/dome-sentinel" }
-dome-throttle = { version = "0.3.0", path = "crates/dome-throttle" }
-dome-policy = { version = "0.3.0", path = "crates/dome-policy" }
+dome-core = { version = "0.4.0", path = "crates/dome-core" }
+dome-ward = { version = "0.4.0", path = "crates/dome-ward" }
+dome-transport = { version = "0.4.0", path = "crates/dome-transport" }
+dome-gate = { version = "0.4.0", path = "crates/dome-gate" }
+dome-ledger = { version = "0.4.0", path = "crates/dome-ledger" }
+dome-sentinel = { version = "0.4.0", path = "crates/dome-sentinel" }
+dome-throttle = { version = "0.4.0", path = "crates/dome-throttle" }
+dome-policy = { version = "0.4.0", path = "crates/dome-policy" }
 
 [package]
 name = "mcpdome"

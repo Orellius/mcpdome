@@ -24,10 +24,10 @@ Interceptor chain orchestration for MCPDome -- the core proxy that wires all sec
 
 ```toml
 [dependencies]
-dome-gate = "0.3"
+dome-gate = "0.4"
 
 # With HTTP+SSE transport support:
-# dome-gate = { version = "0.3", features = ["http"] }
+# dome-gate = { version = "0.4", features = ["http"] }
 ```
 
 ```rust

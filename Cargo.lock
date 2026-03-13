@@ -413,7 +413,7 @@ dependencies = [
 
 [[package]]
 name = "dome-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "serde",
@@ -425,7 +425,7 @@ dependencies = [
 
 [[package]]
 name = "dome-gate"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -446,7 +446,7 @@ dependencies = [
 
 [[package]]
 name = "dome-ledger"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "dome-core",
@@ -461,7 +461,7 @@ dependencies = [
 
 [[package]]
 name = "dome-policy"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "arc-swap",
  "chrono",
@@ -480,7 +480,7 @@ dependencies = [
 
 [[package]]
 name = "dome-sentinel"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "argon2",
  "async-trait",
@@ -496,7 +496,7 @@ dependencies = [
 
 [[package]]
 name = "dome-throttle"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "dashmap",
  "dome-core",
@@ -507,7 +507,7 @@ dependencies = [
 
 [[package]]
 name = "dome-transport"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -529,7 +529,7 @@ dependencies = [
 
 [[package]]
 name = "dome-ward"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "dome-core",
@@ -1239,7 +1239,7 @@ checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
 
 [[package]]
 name = "mcpdome"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "arc-swap",

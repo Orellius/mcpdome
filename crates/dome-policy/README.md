@@ -17,7 +17,7 @@ TOML-based policy engine for MCPDome with default-deny authorization and hot-rel
 
 ```toml
 [dependencies]
-dome-policy = "0.3"
+dome-policy = "0.4"
 ```
 
 ```rust

@@ -14,7 +14,7 @@ Injection detection, schema integrity verification, and heuristic analysis for M
 
 ```toml
 [dependencies]
-dome-ward = "0.3"
+dome-ward = "0.4"
 ```
 
 ```rust
