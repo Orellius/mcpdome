@@ -430,6 +430,7 @@ async fn main() -> anyhow::Result<()> {
                     || section.and_then(|s| s.rate_limit.as_ref()).is_some(),
                 enable_budget: false,
                 allow_anonymous,
+                block_outbound_injection: false,
             };
 
             // Build rate limiter config.

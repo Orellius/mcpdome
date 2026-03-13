@@ -48,11 +48,13 @@ impl HashChain {
     ///
     /// Returns the SHA-256 hash of the serialized entry, which becomes
     /// the new chain head.
-    pub fn append(&mut self, entry: &AuditEntry) -> Result<String, serde_json::Error> {
-        debug_assert_eq!(
-            entry.prev_hash, self.current_hash,
-            "entry prev_hash does not match chain head"
-        );
+    pub fn append(&mut self, entry: &AuditEntry) -> Result<String, ChainAppendError> {
+        if entry.prev_hash != self.current_hash {
+            return Err(ChainAppendError::HashMismatch {
+                expected: self.current_hash.clone(),
+                got: entry.prev_hash.clone(),
+            });
+        }
         let hash = hash_entry(entry)?;
         self.current_hash = hash.clone();
         self.len += 1;
@@ -151,6 +153,14 @@ pub enum ChainError {
 
     #[error("failed to serialize entry seq={seq}: {reason}")]
     SerializationFailed { seq: u64, reason: String },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ChainAppendError {
+    #[error("prev_hash mismatch: expected {expected}, got {got}")]
+    HashMismatch { expected: String, got: String },
+    #[error("failed to serialize entry: {0}")]
+    Serialization(#[from] serde_json::Error),
 }
 
 #[cfg(test)]

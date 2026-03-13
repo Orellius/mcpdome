@@ -6,7 +6,8 @@ use dome_core::{DomeError, McpMessage};
 use dome_ledger::{AuditEntry, Direction, Ledger};
 use dome_policy::{Identity as PolicyIdentity, SharedPolicyEngine};
 use dome_sentinel::{
-    AnonymousAuthenticator, Authenticator, IdentityResolver, PskAuthenticator, ResolverConfig,
+    AnonymousAuthenticator, ApiKeyAuthenticator, Authenticator, IdentityResolver, PskAuthenticator,
+    ResolverConfig,
 };
 use dome_throttle::{BudgetTracker, BudgetTrackerConfig, RateLimiter, RateLimiterConfig};
 use dome_transport::stdio::StdioTransport;
@@ -17,7 +18,11 @@ use chrono::Utc;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
+use tokio::time::{Duration, timeout};
 use tracing::{debug, error, info, warn};
+
+const MAX_LINE_SIZE: usize = 10 * 1024 * 1024; // 10 MB
+const CLIENT_READ_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes
 use uuid::Uuid;
 
 /// Configuration for the Gate proxy.
@@ -35,6 +40,9 @@ pub struct GateConfig {
     pub enable_budget: bool,
     /// Whether to allow anonymous access.
     pub allow_anonymous: bool,
+    /// Whether to block outbound responses that contain injection patterns.
+    /// When false (default), outbound injection is logged but not blocked.
+    pub block_outbound_injection: bool,
 }
 
 impl Default for GateConfig {
@@ -46,6 +54,7 @@ impl Default for GateConfig {
             enable_rate_limit: false,
             enable_budget: false,
             allow_anonymous: true,
+            block_outbound_injection: false,
         }
     }
 }
@@ -148,12 +157,38 @@ impl Gate {
             let mut line = String::new();
             loop {
                 line.clear();
-                match client_reader.read_line(&mut line).await {
+                let read_result =
+                    timeout(CLIENT_READ_TIMEOUT, client_reader.read_line(&mut line)).await;
+                let read_result = match read_result {
+                    Ok(inner) => inner,
+                    Err(_) => {
+                        warn!("client read timed out");
+                        break;
+                    }
+                };
+                match read_result {
                     Ok(0) => {
                         info!("client closed stdin -- shutting down");
                         break;
                     }
                     Ok(_) => {
+                        if line.len() > MAX_LINE_SIZE {
+                            warn!(
+                                size = line.len(),
+                                max = MAX_LINE_SIZE,
+                                "client message exceeds size limit, dropping"
+                            );
+                            let err_resp = McpMessage::error_response(
+                                Value::Null,
+                                -32600,
+                                "Message too large",
+                            );
+                            if let Err(we) = write_to_client(&gate_client_writer, &err_resp).await {
+                                error!(%we, "failed to send size error to client");
+                                break;
+                            }
+                            continue;
+                        }
                         let trimmed = line.trim();
                         if trimmed.is_empty() {
                             continue;
@@ -185,9 +220,10 @@ impl Gate {
                                             );
                                             *gate_identity.lock().await = Some(id);
 
-                                            // Fix 4: Strip PSK before forwarding so the
-                                            // downstream server never sees credentials.
+                                            // Strip all credential fields before forwarding
+                                            // so the downstream server never sees them.
                                             msg = PskAuthenticator::strip_psk(&msg);
+                                            msg = ApiKeyAuthenticator::strip_api_key(&msg);
                                         }
                                         Err(e) => {
                                             // Fix 1: On auth failure during initialize,
@@ -617,11 +653,9 @@ impl Gate {
                             }
                         }
 
-                        // ── Fix 6: Outbound response scanning ──
-                        // Scan tool call results for injection patterns (log only).
+                        // ── Outbound response scanning ──
                         if outbound_config.enable_ward {
                             if let Some(ref result) = forward_msg.result {
-                                // Scan content arrays in tool call responses.
                                 let scan_target = if let Some(content) = result.get("content") {
                                     serde_json::to_string(content).unwrap_or_default()
                                 } else {
@@ -635,12 +669,17 @@ impl Gate {
                                             .iter()
                                             .map(|m| m.pattern_name.as_str())
                                             .collect();
+                                        let decision = if outbound_config.block_outbound_injection {
+                                            "deny:outbound_injection"
+                                        } else {
+                                            "warn:outbound_injection"
+                                        };
                                         warn!(
                                             patterns = ?pattern_names,
                                             direction = "outbound",
-                                            "suspicious content in server response"
+                                            blocked = outbound_config.block_outbound_injection,
+                                            "injection detected in server response"
                                         );
-                                        // Fix 9: Record outbound ward warning.
                                         record_audit(
                                             &outbound_ledger,
                                             outbound_request_id,
@@ -648,21 +687,35 @@ impl Gate {
                                             Direction::Outbound,
                                             &method,
                                             None,
-                                            &format!(
-                                                "warn:outbound_injection:{}",
-                                                pattern_names.join(",")
-                                            ),
+                                            &format!("{}:{}", decision, pattern_names.join(",")),
                                             None,
                                             start.elapsed().as_micros() as u64,
                                         )
                                         .await;
-                                        // Don't block by default, just log.
+
+                                        if outbound_config.block_outbound_injection {
+                                            let err_id =
+                                                forward_msg.id.clone().unwrap_or(Value::Null);
+                                            let err_resp = McpMessage::error_response(
+                                                err_id,
+                                                -32005,
+                                                "Response blocked: injection pattern detected in server output",
+                                            );
+                                            if let Err(we) =
+                                                write_to_client(&outbound_client_writer, &err_resp)
+                                                    .await
+                                            {
+                                                error!(%we, "failed to send outbound injection error");
+                                                break;
+                                            }
+                                            continue;
+                                        }
                                     }
                                 }
                             }
                         }
 
-                        // ── Fix 9: Record outbound audit entry ──
+                        // Record outbound audit entry
                         record_audit(
                             &outbound_ledger,
                             outbound_request_id,

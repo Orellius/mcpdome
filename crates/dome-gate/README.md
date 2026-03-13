@@ -9,8 +9,9 @@ Interceptor chain orchestration for MCPDome -- the core proxy that wires all sec
 - Orchestrates the full inbound interceptor chain: Sentinel (auth) → Throttle (rate limit) → **Ward (injection)** → Policy (authz) → Ledger (audit). Ward runs before Policy so injection detection cannot be bypassed by permissive rules.
 - **Guards all MCP methods** — not just `tools/call`. Rate limiting, policy, and injection scanning apply to `resources/read`, `prompts/get`, and all other methods.
 - **Sends proper JSON-RPC error responses** on deny (rate limit, policy, injection) instead of silently dropping messages.
-- **Strips PSK credentials** from `initialize` messages before forwarding to the upstream server.
-- **Outbound scanning** — scans server responses for injection patterns and logs warnings. Blocks critical schema drift by substituting known-good schemas.
+- **Strips all credentials** (PSK and API key) from `initialize` messages before forwarding to the upstream server.
+- **Configurable outbound injection blocking** — scans server responses for injection patterns with option to block (not just warn) when threats are detected in outbound messages.
+- **Bounded client reads** — enforces 10MB max message size and 5-minute read timeout on client connections.
 - Records every inbound and outbound decision to the hash-chained audit ledger.
 - Drops invalid JSON with parse error responses instead of forwarding malformed messages.
 
@@ -18,7 +19,7 @@ Interceptor chain orchestration for MCPDome -- the core proxy that wires all sec
 
 ```toml
 [dependencies]
-dome-gate = "0.1"
+dome-gate = "0.3"
 ```
 
 ```rust

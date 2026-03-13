@@ -138,6 +138,7 @@ impl PskAuthenticator {
     /// internally, preventing timing side-channel attacks.
     fn verify_psk(&self, provided_secret: &str) -> Option<&HashedPskEntry> {
         let argon2 = argon2_hasher();
+        let mut matched: Option<&HashedPskEntry> = None;
 
         for entry in self.entries.values() {
             let parsed_hash = match PasswordHash::new(&entry.hashed_secret) {
@@ -148,10 +149,10 @@ impl PskAuthenticator {
                 .verify_password(provided_secret.as_bytes(), &parsed_hash)
                 .is_ok()
             {
-                return Some(entry);
+                matched = Some(entry);
             }
         }
-        None
+        matched
     }
 }
 
@@ -278,6 +279,7 @@ impl ApiKeyAuthenticator {
     /// Verify a provided API key against all stored hashes.
     fn verify_api_key(&self, provided_secret: &str) -> Option<&HashedApiKeyEntry> {
         let argon2 = argon2_hasher();
+        let mut matched: Option<&HashedApiKeyEntry> = None;
 
         for entry in self.entries.values() {
             let parsed_hash = match PasswordHash::new(&entry.hashed_secret) {
@@ -288,10 +290,10 @@ impl ApiKeyAuthenticator {
                 .verify_password(provided_secret.as_bytes(), &parsed_hash)
                 .is_ok()
             {
-                return Some(entry);
+                matched = Some(entry);
             }
         }
-        None
+        matched
     }
 }
 
