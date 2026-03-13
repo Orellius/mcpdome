@@ -6,8 +6,8 @@ use dome_core::{DomeError, McpMessage};
 use dome_ledger::{AuditEntry, Direction, Ledger};
 use dome_policy::{Identity as PolicyIdentity, SharedPolicyEngine};
 use dome_sentinel::{
-    AnonymousAuthenticator, ApiKeyAuthenticator, Authenticator, IdentityResolver,
-    PskAuthenticator, ResolverConfig,
+    AnonymousAuthenticator, ApiKeyAuthenticator, Authenticator, IdentityResolver, PskAuthenticator,
+    ResolverConfig,
 };
 use dome_throttle::{BudgetTracker, BudgetTrackerConfig, RateLimiter, RateLimiterConfig};
 use dome_transport::stdio::StdioTransport;
@@ -157,11 +157,8 @@ impl Gate {
             let mut line = String::new();
             loop {
                 line.clear();
-                let read_result = timeout(
-                    CLIENT_READ_TIMEOUT,
-                    client_reader.read_line(&mut line),
-                )
-                .await;
+                let read_result =
+                    timeout(CLIENT_READ_TIMEOUT, client_reader.read_line(&mut line)).await;
                 let read_result = match read_result {
                     Ok(inner) => inner,
                     Err(_) => {
@@ -186,9 +183,7 @@ impl Gate {
                                 -32600,
                                 "Message too large",
                             );
-                            if let Err(we) =
-                                write_to_client(&gate_client_writer, &err_resp).await
-                            {
+                            if let Err(we) = write_to_client(&gate_client_writer, &err_resp).await {
                                 error!(%we, "failed to send size error to client");
                                 break;
                             }
@@ -692,31 +687,23 @@ impl Gate {
                                             Direction::Outbound,
                                             &method,
                                             None,
-                                            &format!(
-                                                "{}:{}",
-                                                decision,
-                                                pattern_names.join(",")
-                                            ),
+                                            &format!("{}:{}", decision, pattern_names.join(",")),
                                             None,
                                             start.elapsed().as_micros() as u64,
                                         )
                                         .await;
 
                                         if outbound_config.block_outbound_injection {
-                                            let err_id = forward_msg
-                                                .id
-                                                .clone()
-                                                .unwrap_or(Value::Null);
+                                            let err_id =
+                                                forward_msg.id.clone().unwrap_or(Value::Null);
                                             let err_resp = McpMessage::error_response(
                                                 err_id,
                                                 -32005,
                                                 "Response blocked: injection pattern detected in server output",
                                             );
-                                            if let Err(we) = write_to_client(
-                                                &outbound_client_writer,
-                                                &err_resp,
-                                            )
-                                            .await
+                                            if let Err(we) =
+                                                write_to_client(&outbound_client_writer, &err_resp)
+                                                    .await
                                             {
                                                 error!(%we, "failed to send outbound injection error");
                                                 break;

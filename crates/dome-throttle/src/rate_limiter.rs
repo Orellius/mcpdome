@@ -184,7 +184,7 @@ impl RateLimiter {
 
         // Periodically check if cleanup is needed
         let count = self.insert_counter.load(Ordering::Relaxed);
-        if count > 0 && count % 100 == 0 && self.buckets.len() > self.config.max_entries {
+        if count > 0 && count.is_multiple_of(100) && self.buckets.len() > self.config.max_entries {
             drop(entry);
             self.maybe_cleanup();
         }
