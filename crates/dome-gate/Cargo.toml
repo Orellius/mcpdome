@@ -23,3 +23,7 @@ tracing.workspace = true
 uuid.workspace = true
 chrono.workspace = true
 arc-swap.workspace = true
+
+[dev-dependencies]
+dome-ledger = { workspace = true, features = ["test-support"] }
+tokio = { workspace = true, features = ["rt", "macros"] }

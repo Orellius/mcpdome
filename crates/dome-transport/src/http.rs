@@ -350,7 +350,11 @@ fn build_cors_layer(allowed_origins: &Option<Vec<String>>) -> CorsLayer {
             let parsed: Vec<HeaderValue> = origins.iter().filter_map(|o| o.parse().ok()).collect();
             cors.allow_origin(AllowOrigin::list(parsed))
         }
-        _ => cors.allow_origin(AllowOrigin::exact("http://localhost".parse().unwrap())),
+        _ => cors.allow_origin(AllowOrigin::exact(
+            "http://localhost"
+                .parse()
+                .expect("static 'http://localhost' is always a valid HeaderValue"),
+        )),
     }
 }
 

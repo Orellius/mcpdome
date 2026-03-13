@@ -64,3 +64,17 @@ priority = 100
 effect = "allow"
 identities = { principals = ["psk:ci-bot"] }
 tools = ["run_tests", "deploy_staging", "git_status"]
+
+# ── Pre-shared keys (PSK authentication) ──
+# Clients send `_mcpdome_psk` in the initialize params.
+# [[psk]]
+# key_id = "ci-bot"
+# secret = "your-secret-key-here"
+# labels = ["role:developer", "env:ci"]
+
+# ── API keys (API key authentication) ──
+# Clients send `_mcpdome_api_key` in the initialize params.
+# [[api_key]]
+# key_id = "service-a"
+# secret = "your-api-key-here"
+# labels = ["role:service", "env:production"]

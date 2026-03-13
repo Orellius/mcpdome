@@ -7,7 +7,7 @@ Interceptor chain orchestration for MCPDome -- the core proxy that wires all sec
 - Runs the MCPDome proxy loop, sitting between the MCP client and server on stdio.
 - **Enforces session initialization** — blocks all requests until the client completes `initialize` with valid credentials. Returns JSON-RPC errors on auth failure (never forwards unauthenticated requests).
 - Orchestrates the full inbound interceptor chain: Sentinel (auth) → Throttle (rate limit) → **Ward (injection)** → Policy (authz) → Ledger (audit). Ward runs before Policy so injection detection cannot be bypassed by permissive rules.
-- **Guards all MCP methods** — not just `tools/call`. Rate limiting, policy, and injection scanning apply to `resources/read`, `prompts/get`, and all other methods.
+- **Guards all MCP methods** — not just `tools/call`. Rate limiting, policy, and injection scanning apply to `resources/read`, `prompts/get`, and all other methods. Uses method-specific resource extraction (tool names, URIs, prompt names) for fine-grained policy evaluation.
 - **Sends proper JSON-RPC error responses** on deny (rate limit, policy, injection) instead of silently dropping messages.
 - **Strips all credentials** (PSK and API key) from `initialize` messages before forwarding to the upstream server.
 - **Configurable outbound injection blocking** — scans server responses for injection patterns with option to block (not just warn) when threats are detected in outbound messages.

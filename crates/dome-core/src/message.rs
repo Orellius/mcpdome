@@ -74,6 +74,38 @@ impl McpMessage {
         self.params.as_ref()?.get("name")?.as_str()
     }
 
+    /// If this is a `resources/read` request, extract the resource URI from `params.uri`.
+    pub fn resource_uri(&self) -> Option<&str> {
+        if self.method.as_deref() != Some("resources/read") {
+            return None;
+        }
+        self.params.as_ref()?.get("uri")?.as_str()
+    }
+
+    /// If this is a `prompts/get` request, extract the prompt name from `params.name`.
+    pub fn prompt_name(&self) -> Option<&str> {
+        if self.method.as_deref() != Some("prompts/get") {
+            return None;
+        }
+        self.params.as_ref()?.get("name")?.as_str()
+    }
+
+    /// Return the primary "resource identifier" being accessed for any MCP method.
+    ///
+    /// - `tools/call`      -> tool name (`params.name`)
+    /// - `resources/read`  -> resource URI (`params.uri`)
+    /// - `prompts/get`     -> prompt name (`params.name`)
+    /// - Listing methods (`resources/list`, `tools/list`, `prompts/list`) -> `None`
+    /// - All other methods -> `None`
+    pub fn method_resource_name(&self) -> Option<&str> {
+        match self.method.as_deref()? {
+            "tools/call" => self.params.as_ref()?.get("name")?.as_str(),
+            "resources/read" => self.params.as_ref()?.get("uri")?.as_str(),
+            "prompts/get" => self.params.as_ref()?.get("name")?.as_str(),
+            _ => None,
+        }
+    }
+
     /// Create a JSON-RPC error response for a given request ID.
     pub fn error_response(id: Value, code: i64, message: impl Into<String>) -> Self {
         Self {
@@ -137,5 +169,95 @@ mod tests {
         let msg2 = McpMessage::parse(&json).unwrap();
         assert_eq!(msg.method, msg2.method);
         assert_eq!(msg.id, msg2.id);
+    }
+
+    #[test]
+    fn test_resource_uri_extraction() {
+        let raw = r#"{"jsonrpc":"2.0","id":2,"method":"resources/read","params":{"uri":"file:///etc/hosts"}}"#;
+        let msg = McpMessage::parse(raw).unwrap();
+        assert_eq!(msg.resource_uri(), Some("file:///etc/hosts"));
+    }
+
+    #[test]
+    fn test_prompt_name_extraction() {
+        let raw = r#"{"jsonrpc":"2.0","id":3,"method":"prompts/get","params":{"name":"summarize","arguments":{"text":"hello"}}}"#;
+        let msg = McpMessage::parse(raw).unwrap();
+        assert_eq!(msg.prompt_name(), Some("summarize"));
+    }
+
+    #[test]
+    fn test_method_resource_name_covers_all_types() {
+        // tools/call -> tool name
+        let raw = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file","arguments":{}}}"#;
+        let msg = McpMessage::parse(raw).unwrap();
+        assert_eq!(msg.method_resource_name(), Some("read_file"));
+
+        // resources/read -> URI
+        let raw = r#"{"jsonrpc":"2.0","id":2,"method":"resources/read","params":{"uri":"file:///tmp/data.json"}}"#;
+        let msg = McpMessage::parse(raw).unwrap();
+        assert_eq!(msg.method_resource_name(), Some("file:///tmp/data.json"));
+
+        // prompts/get -> prompt name
+        let raw =
+            r#"{"jsonrpc":"2.0","id":3,"method":"prompts/get","params":{"name":"code_review"}}"#;
+        let msg = McpMessage::parse(raw).unwrap();
+        assert_eq!(msg.method_resource_name(), Some("code_review"));
+
+        // listing methods -> None
+        for method in &["resources/list", "tools/list", "prompts/list"] {
+            let raw = format!(
+                r#"{{"jsonrpc":"2.0","id":10,"method":"{}","params":{{}}}}"#,
+                method
+            );
+            let msg = McpMessage::parse(&raw).unwrap();
+            assert_eq!(
+                msg.method_resource_name(),
+                None,
+                "{} should return None",
+                method
+            );
+        }
+
+        // other methods -> None
+        let raw = r#"{"jsonrpc":"2.0","id":99,"method":"initialize","params":{"capabilities":{}}}"#;
+        let msg = McpMessage::parse(raw).unwrap();
+        assert_eq!(msg.method_resource_name(), None);
+    }
+
+    #[test]
+    fn test_resource_uri_returns_none_for_other_methods() {
+        // tools/call should not return a resource URI
+        let raw = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file"}}"#;
+        let msg = McpMessage::parse(raw).unwrap();
+        assert_eq!(msg.resource_uri(), None);
+
+        // prompts/get should not return a resource URI
+        let raw =
+            r#"{"jsonrpc":"2.0","id":2,"method":"prompts/get","params":{"name":"summarize"}}"#;
+        let msg = McpMessage::parse(raw).unwrap();
+        assert_eq!(msg.resource_uri(), None);
+
+        // response should not return a resource URI
+        let raw = r#"{"jsonrpc":"2.0","id":3,"result":{"contents":[]}}"#;
+        let msg = McpMessage::parse(raw).unwrap();
+        assert_eq!(msg.resource_uri(), None);
+    }
+
+    #[test]
+    fn test_prompt_name_returns_none_for_other_methods() {
+        // tools/call should not return a prompt name
+        let raw = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file"}}"#;
+        let msg = McpMessage::parse(raw).unwrap();
+        assert_eq!(msg.prompt_name(), None);
+
+        // resources/read should not return a prompt name
+        let raw = r#"{"jsonrpc":"2.0","id":2,"method":"resources/read","params":{"uri":"file:///tmp/x"}}"#;
+        let msg = McpMessage::parse(raw).unwrap();
+        assert_eq!(msg.prompt_name(), None);
+
+        // response should not return a prompt name
+        let raw = r#"{"jsonrpc":"2.0","id":3,"result":{"messages":[]}}"#;
+        let msg = McpMessage::parse(raw).unwrap();
+        assert_eq!(msg.prompt_name(), None);
     }
 }

@@ -8,7 +8,9 @@ use clap::{Parser, Subcommand};
 use dome_gate::{Gate, GateConfig};
 use dome_ledger::{AuditEntry, Ledger, StderrSink};
 use dome_policy::{PolicyEngine, PolicyWatcher, SharedPolicyEngine, parse_policy};
-use dome_sentinel::{AnonymousAuthenticator, PskAuthenticator, PskEntry};
+use dome_sentinel::{
+    AnonymousAuthenticator, ApiKeyAuthenticator, ApiKeyEntry, PskAuthenticator, PskEntry,
+};
 use dome_throttle::{BudgetTrackerConfig, RateLimiterConfig};
 #[cfg(test)]
 use dome_ward::SchemaPinStore;
@@ -104,6 +106,8 @@ struct McpDomeConfig {
     rules: Vec<dome_policy::Rule>,
     #[serde(default)]
     psk: Vec<PskConfigEntry>,
+    #[serde(default)]
+    api_key: Vec<ApiKeyConfigEntry>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -148,6 +152,14 @@ struct WardConfig {
 
 #[derive(Debug, Deserialize)]
 struct PskConfigEntry {
+    key_id: String,
+    secret: String,
+    #[serde(default)]
+    labels: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiKeyConfigEntry {
     key_id: String,
     secret: String,
     #[serde(default)]
@@ -447,7 +459,7 @@ async fn main() -> anyhow::Result<()> {
                 RateLimiterConfig::default()
             };
 
-            // Build authenticators from config PSK entries + anonymous fallback.
+            // Build authenticators from config PSK/API key entries + anonymous fallback.
             let mut authenticators: Vec<Box<dyn dome_sentinel::Authenticator>> = Vec::new();
             if let Some(ref cfg) = loaded_config
                 && !cfg.psk.is_empty()
@@ -462,6 +474,20 @@ async fn main() -> anyhow::Result<()> {
                     })
                     .collect();
                 authenticators.push(Box::new(PskAuthenticator::new(entries)));
+            }
+            if let Some(ref cfg) = loaded_config
+                && !cfg.api_key.is_empty()
+            {
+                let entries: Vec<ApiKeyEntry> = cfg
+                    .api_key
+                    .iter()
+                    .map(|a| ApiKeyEntry {
+                        key_id: a.key_id.clone(),
+                        secret: a.secret.clone(),
+                        labels: a.labels.iter().cloned().collect(),
+                    })
+                    .collect();
+                authenticators.push(Box::new(ApiKeyAuthenticator::new(entries)));
             }
             authenticators.push(Box::new(AnonymousAuthenticator));
 
@@ -514,7 +540,11 @@ async fn main() -> anyhow::Result<()> {
                 ledger,
             );
 
-            gate.run_stdio(command, args).await?;
+            if let Err(e) = gate.run_stdio(command, args).await {
+                eprintln!("MCPDome proxy exited with error: {e}");
+                eprintln!("Audit logs may not have been flushed completely.");
+                return Err(e.into());
+            }
         }
 
         Commands::Validate { path } => match run_validate(&path) {

@@ -61,7 +61,7 @@ AI agents are getting access to powerful tools — file systems, databases, APIs
 - **Multiple auth methods** — Argon2id-hashed PSKs, API key authentication, OAuth2 scaffolding, with timing-safe verification and automatic credential stripping
 - **HTTP+SSE transport** — Feature-gated HTTP transport with Server-Sent Events, session management, restricted CORS, and 256KB body limits (in addition to stdio)
 - **Bounded I/O** — 10MB max message size, 5-minute read timeouts, 30-second write timeouts to prevent resource exhaustion
-- **Full method coverage** — All MCP methods are guarded (not just `tools/call`), with proper JSON-RPC error responses on deny
+- **Full method coverage** — All MCP methods are guarded (not just `tools/call`), with method-specific resource extraction (tool names, resource URIs, prompt names) for fine-grained policy rules
 - **Outbound scanning** — Server responses are scanned for injection patterns before reaching the AI agent
 - **CLI toolbox** — `validate`, `verify-log`, `hash-schema`, `keygen` subcommands plus unified `--config` file support
 - **0.2ms overhead** — Rust performance, single binary, zero config to start
@@ -215,10 +215,11 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full deep dive.
 
 ## Test Suite
 
-199 tests covering every security component:
+226 tests covering every security component:
 
 ```
-dome-core        5 tests   (message parsing, error mapping)
+dome-core       10 tests   (message parsing, error mapping, resource/prompt extraction)
+dome-gate       22 tests   (config defaults, interceptor chain, audit recording, constants)
 dome-sentinel   30 tests   (PSK auth, API keys, Argon2id, timing-safe verification, chain resolution)
 dome-policy     39 tests   (rules, priority, recursive args, time-windows, hot-reload, concurrent reads)
 dome-throttle   22 tests   (token bucket, rate limits, budgets, LRU eviction, global limits, TOCTOU safety)

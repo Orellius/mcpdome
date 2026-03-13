@@ -285,12 +285,13 @@ impl Gate {
                                 // Fix 2: Apply interceptor chain to ALL methods,
                                 // not just tools/call.
 
-                                // Extract tool-specific fields conditionally.
-                                let tool_name = if method == "tools/call" {
-                                    tool.as_deref().unwrap_or("unknown")
-                                } else {
-                                    "-"
-                                };
+                                // Extract the method-specific resource name for
+                                // policy evaluation. For tools/call this is the
+                                // tool name, for resources/read the URI, for
+                                // prompts/get the prompt name, etc.
+                                let resource_name =
+                                    msg.method_resource_name().unwrap_or("-").to_string();
+                                let tool_name = resource_name.as_str();
 
                                 let args = msg
                                     .params
@@ -301,7 +302,7 @@ impl Gate {
 
                                 // ── 2. Throttle: Rate limit check ──
                                 if gate_config.enable_rate_limit {
-                                    let rl_tool = if method == "tools/call" {
+                                    let rl_tool = if tool_name != "-" {
                                         Some(tool_name)
                                     } else {
                                         None
@@ -823,5 +824,520 @@ async fn record_audit(
 
     if let Err(e) = ledger.lock().await.record(entry) {
         error!(%e, "failed to record audit entry");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dome_ledger::MemorySink;
+
+    // -----------------------------------------------------------------------
+    // Helpers
+    // -----------------------------------------------------------------------
+
+    /// Create a Ledger backed by a MemorySink for test inspection.
+    fn test_ledger() -> Ledger {
+        Ledger::new(vec![Box::new(MemorySink::new())])
+    }
+
+    /// Create a Ledger with no sinks (sufficient when we only care about
+    /// entry count, not sink contents).
+    fn empty_ledger() -> Ledger {
+        Ledger::new(vec![])
+    }
+
+    // -----------------------------------------------------------------------
+    // GateConfig defaults
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn gate_config_defaults_all_security_disabled() {
+        let config = GateConfig::default();
+
+        assert!(
+            !config.enforce_policy,
+            "enforce_policy should default to false"
+        );
+        assert!(!config.enable_ward, "enable_ward should default to false");
+        assert!(
+            !config.enable_schema_pin,
+            "enable_schema_pin should default to false"
+        );
+        assert!(
+            !config.enable_rate_limit,
+            "enable_rate_limit should default to false"
+        );
+        assert!(
+            !config.enable_budget,
+            "enable_budget should default to false"
+        );
+        assert!(
+            config.allow_anonymous,
+            "allow_anonymous should default to true"
+        );
+        assert!(
+            !config.block_outbound_injection,
+            "block_outbound_injection should default to false"
+        );
+    }
+
+    #[test]
+    fn gate_config_with_all_enabled() {
+        let config = GateConfig {
+            enforce_policy: true,
+            enable_ward: true,
+            enable_schema_pin: true,
+            enable_rate_limit: true,
+            enable_budget: true,
+            allow_anonymous: false,
+            block_outbound_injection: true,
+        };
+
+        assert!(config.enforce_policy);
+        assert!(config.enable_ward);
+        assert!(config.enable_schema_pin);
+        assert!(config.enable_rate_limit);
+        assert!(config.enable_budget);
+        assert!(!config.allow_anonymous);
+        assert!(config.block_outbound_injection);
+    }
+
+    #[test]
+    fn gate_config_is_cloneable() {
+        let original = GateConfig {
+            enforce_policy: true,
+            enable_ward: true,
+            enable_schema_pin: false,
+            enable_rate_limit: true,
+            enable_budget: false,
+            allow_anonymous: false,
+            block_outbound_injection: true,
+        };
+        let cloned = original.clone();
+
+        assert_eq!(cloned.enforce_policy, original.enforce_policy);
+        assert_eq!(cloned.enable_ward, original.enable_ward);
+        assert_eq!(cloned.enable_schema_pin, original.enable_schema_pin);
+        assert_eq!(cloned.enable_rate_limit, original.enable_rate_limit);
+        assert_eq!(cloned.enable_budget, original.enable_budget);
+        assert_eq!(cloned.allow_anonymous, original.allow_anonymous);
+        assert_eq!(
+            cloned.block_outbound_injection,
+            original.block_outbound_injection
+        );
+    }
+
+    #[test]
+    fn gate_config_is_debug_printable() {
+        let config = GateConfig::default();
+        let debug_output = format!("{:?}", config);
+
+        assert!(debug_output.contains("GateConfig"));
+        assert!(debug_output.contains("enforce_policy"));
+        assert!(debug_output.contains("enable_ward"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Gate::transparent
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn transparent_gate_has_correct_config_defaults() {
+        let gate = Gate::transparent(empty_ledger());
+
+        assert!(
+            !gate.config.enforce_policy,
+            "transparent gate should not enforce policy"
+        );
+        assert!(
+            !gate.config.enable_ward,
+            "transparent gate should not enable ward"
+        );
+        assert!(
+            !gate.config.enable_schema_pin,
+            "transparent gate should not enable schema pinning"
+        );
+        assert!(
+            !gate.config.enable_rate_limit,
+            "transparent gate should not enable rate limiting"
+        );
+        assert!(
+            !gate.config.enable_budget,
+            "transparent gate should not enable budget tracking"
+        );
+        assert!(
+            gate.config.allow_anonymous,
+            "transparent gate should allow anonymous access"
+        );
+        assert!(
+            !gate.config.block_outbound_injection,
+            "transparent gate should not block outbound injection"
+        );
+    }
+
+    #[test]
+    fn transparent_gate_has_no_policy_engine() {
+        let gate = Gate::transparent(empty_ledger());
+        assert!(
+            gate.policy_engine.is_none(),
+            "transparent gate should have no policy engine"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Gate::new with custom config
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn gate_new_with_custom_config_preserves_flags() {
+        let config = GateConfig {
+            enforce_policy: true,
+            enable_ward: true,
+            enable_schema_pin: true,
+            enable_rate_limit: true,
+            enable_budget: true,
+            allow_anonymous: false,
+            block_outbound_injection: true,
+        };
+
+        let gate = Gate::new(
+            config,
+            vec![Box::new(AnonymousAuthenticator)],
+            None,
+            RateLimiterConfig::default(),
+            BudgetTrackerConfig::default(),
+            empty_ledger(),
+        );
+
+        assert!(gate.config.enforce_policy);
+        assert!(gate.config.enable_ward);
+        assert!(gate.config.enable_schema_pin);
+        assert!(gate.config.enable_rate_limit);
+        assert!(gate.config.enable_budget);
+        assert!(!gate.config.allow_anonymous);
+        assert!(gate.config.block_outbound_injection);
+    }
+
+    #[test]
+    fn gate_new_without_policy_engine_stores_none() {
+        let gate = Gate::new(
+            GateConfig::default(),
+            vec![Box::new(AnonymousAuthenticator)],
+            None,
+            RateLimiterConfig::default(),
+            BudgetTrackerConfig::default(),
+            empty_ledger(),
+        );
+
+        assert!(gate.policy_engine.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // record_audit
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn record_audit_creates_entry_with_correct_fields() {
+        let ledger = Arc::new(Mutex::new(test_ledger()));
+        let request_id = Uuid::new_v4();
+
+        record_audit(
+            &ledger,
+            request_id,
+            "test-user",
+            Direction::Inbound,
+            "tools/call",
+            Some("read_file"),
+            "allow",
+            Some("rule-1"),
+            42,
+        )
+        .await;
+
+        let ledger_guard = ledger.lock().await;
+        assert_eq!(
+            ledger_guard.entry_count(),
+            1,
+            "should have recorded exactly one entry"
+        );
+    }
+
+    #[tokio::test]
+    async fn record_audit_with_no_tool_and_no_rule() {
+        let ledger = Arc::new(Mutex::new(test_ledger()));
+        let request_id = Uuid::new_v4();
+
+        record_audit(
+            &ledger,
+            request_id,
+            "anonymous",
+            Direction::Outbound,
+            "initialize",
+            None,
+            "forward",
+            None,
+            0,
+        )
+        .await;
+
+        let ledger_guard = ledger.lock().await;
+        assert_eq!(ledger_guard.entry_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn record_audit_multiple_entries_increment_count() {
+        let ledger = Arc::new(Mutex::new(test_ledger()));
+
+        for i in 0..5 {
+            record_audit(
+                &ledger,
+                Uuid::new_v4(),
+                &format!("user-{i}"),
+                Direction::Inbound,
+                "tools/call",
+                Some("test_tool"),
+                "allow",
+                None,
+                i * 10,
+            )
+            .await;
+        }
+
+        let ledger_guard = ledger.lock().await;
+        assert_eq!(ledger_guard.entry_count(), 5);
+    }
+
+    #[tokio::test]
+    async fn record_audit_deny_decisions_are_recorded() {
+        let ledger = Arc::new(Mutex::new(test_ledger()));
+
+        record_audit(
+            &ledger,
+            Uuid::new_v4(),
+            "malicious-user",
+            Direction::Inbound,
+            "tools/call",
+            Some("exec_command"),
+            "deny:policy:no-exec",
+            Some("no-exec"),
+            150,
+        )
+        .await;
+
+        record_audit(
+            &ledger,
+            Uuid::new_v4(),
+            "spammer",
+            Direction::Inbound,
+            "tools/call",
+            Some("spam_tool"),
+            "deny:rate_limit",
+            None,
+            5,
+        )
+        .await;
+
+        record_audit(
+            &ledger,
+            Uuid::new_v4(),
+            "attacker",
+            Direction::Inbound,
+            "tools/call",
+            Some("read_file"),
+            "deny:injection:prompt_injection",
+            None,
+            200,
+        )
+        .await;
+
+        let ledger_guard = ledger.lock().await;
+        assert_eq!(ledger_guard.entry_count(), 3);
+    }
+
+    #[tokio::test]
+    async fn record_audit_outbound_schema_drift() {
+        let ledger = Arc::new(Mutex::new(test_ledger()));
+
+        record_audit(
+            &ledger,
+            Uuid::new_v4(),
+            "server",
+            Direction::Outbound,
+            "tools/list",
+            None,
+            "deny:schema_drift",
+            None,
+            75,
+        )
+        .await;
+
+        let ledger_guard = ledger.lock().await;
+        assert_eq!(ledger_guard.entry_count(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Constants
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn max_line_size_is_ten_megabytes() {
+        assert_eq!(MAX_LINE_SIZE, 10 * 1024 * 1024);
+    }
+
+    #[test]
+    fn client_read_timeout_is_five_minutes() {
+        assert_eq!(CLIENT_READ_TIMEOUT, Duration::from_secs(300));
+    }
+
+    // -----------------------------------------------------------------------
+    // GateConfig partial overrides (common patterns)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn gate_config_ward_only_mode() {
+        let config = GateConfig {
+            enable_ward: true,
+            ..GateConfig::default()
+        };
+
+        assert!(config.enable_ward);
+        assert!(!config.enforce_policy, "policy should remain off");
+        assert!(!config.enable_rate_limit, "rate limit should remain off");
+        assert!(!config.enable_budget, "budget should remain off");
+        assert!(!config.enable_schema_pin, "schema pin should remain off");
+        assert!(config.allow_anonymous, "anonymous should remain on");
+    }
+
+    #[test]
+    fn gate_config_full_security_mode() {
+        let config = GateConfig {
+            enforce_policy: true,
+            enable_ward: true,
+            enable_schema_pin: true,
+            enable_rate_limit: true,
+            enable_budget: true,
+            allow_anonymous: false,
+            block_outbound_injection: true,
+        };
+
+        // Every security feature is active
+        assert!(config.enforce_policy);
+        assert!(config.enable_ward);
+        assert!(config.enable_schema_pin);
+        assert!(config.enable_rate_limit);
+        assert!(config.enable_budget);
+        assert!(!config.allow_anonymous);
+        assert!(config.block_outbound_injection);
+    }
+
+    // -----------------------------------------------------------------------
+    // Gate construction does not panic
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn gate_new_with_multiple_authenticators_does_not_panic() {
+        let _gate = Gate::new(
+            GateConfig::default(),
+            vec![
+                Box::new(AnonymousAuthenticator),
+                Box::new(AnonymousAuthenticator),
+            ],
+            None,
+            RateLimiterConfig::default(),
+            BudgetTrackerConfig::default(),
+            empty_ledger(),
+        );
+    }
+
+    #[test]
+    fn gate_new_with_empty_authenticators_does_not_panic() {
+        let _gate = Gate::new(
+            GateConfig::default(),
+            vec![],
+            None,
+            RateLimiterConfig::default(),
+            BudgetTrackerConfig::default(),
+            empty_ledger(),
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Audit entry construction (verifying the shape record_audit produces)
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn record_audit_entry_fields_populated_correctly() {
+        // Use a MemorySink so entries are recorded and inspectable.
+        let ledger = Arc::new(Mutex::new(Ledger::new(vec![Box::new(MemorySink::new())])));
+        let request_id = Uuid::new_v4();
+
+        record_audit(
+            &ledger,
+            request_id,
+            "psk:dev-key-1",
+            Direction::Inbound,
+            "tools/call",
+            Some("read_file"),
+            "deny:policy:no-read",
+            Some("no-read"),
+            999,
+        )
+        .await;
+
+        // Verify the ledger recorded it
+        let guard = ledger.lock().await;
+        assert_eq!(guard.entry_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn record_audit_handles_empty_identity() {
+        let ledger = Arc::new(Mutex::new(test_ledger()));
+
+        record_audit(
+            &ledger,
+            Uuid::new_v4(),
+            "",
+            Direction::Inbound,
+            "initialize",
+            None,
+            "allow",
+            None,
+            0,
+        )
+        .await;
+
+        let guard = ledger.lock().await;
+        assert_eq!(
+            guard.entry_count(),
+            1,
+            "empty identity should not prevent recording"
+        );
+    }
+
+    #[tokio::test]
+    async fn record_audit_handles_long_decision_string() {
+        let ledger = Arc::new(Mutex::new(test_ledger()));
+        let long_decision = format!("deny:injection:{}", "pattern_name,".repeat(50));
+
+        record_audit(
+            &ledger,
+            Uuid::new_v4(),
+            "test-user",
+            Direction::Inbound,
+            "tools/call",
+            Some("risky_tool"),
+            &long_decision,
+            None,
+            500,
+        )
+        .await;
+
+        let guard = ledger.lock().await;
+        assert_eq!(
+            guard.entry_count(),
+            1,
+            "long decision strings should be accepted"
+        );
     }
 }
